@@ -4,7 +4,7 @@ PRAGMA journal_mode=WAL;
 -- Tabla principal de eventos de auditoría
 CREATE TABLE IF NOT EXISTS audit_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    timestamp REAL NOT NULL,
+    timestamp REAL NOT NULL, -- Epoch Unix time (seconds) 
     level TEXT NOT NULL,
     module_source TEXT NOT NULL,
     message TEXT NOT NULL,
