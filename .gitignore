@@ -16,4 +16,17 @@ Thumbs.db
 *.sqlite3
 
 # Secretos y Credenciales (NUNCA SUBIR)
-.env  
+.env   
+
+# --- Security Exclusions for Logger ---
+# Global exclusions
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+
+# Directory specific exclusions (Shield)
+logs/*
+# Allow source code and DDL
+!logs/*.py
+!logs/*.sql
+!logs/__init__.py  
