@@ -1,0 +1,19 @@
+# Python compilado
+__pycache__/
+*.py[cod]
+
+# Entornos Virtuales
+venv/
+.venv/
+
+# IDEs y SO
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Logs y Bases de datos locales
+*.log
+*.sqlite3
+
+# Secretos y Credenciales (NUNCA SUBIR)
+.env  
