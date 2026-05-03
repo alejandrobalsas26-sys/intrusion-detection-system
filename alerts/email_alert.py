@@ -20,6 +20,20 @@ def send_security_alert(
 ) -> bool:
     """
     Envía una alerta de seguridad por correo electrónico usando SMTP con STARTTLS.
+
+    Args:
+        event_level (str): Nivel de severidad de la alerta (ej. 'CRITICAL', 'WARNING').
+        module_source (str): Nombre del módulo que originó la alerta (ej. 'auth', 'ids_core').
+        alert_message (str): Cuerpo del mensaje con el detalle del evento.
+        subject (str, optional): Asunto personalizado. Si es None, genera un formato estándar.
+        attachment_paths (list[str], optional): Lista de rutas a archivos de evidencia forense.
+
+    Returns:
+        bool: True si el correo fue transmitido exitosamente al servidor SMTP. False si hubo
+              errores de autenticación, red o protocolo (los fallos se registran en el L0 logger).
+              
+    Raises:
+        None: Todas las excepciones son capturadas y gestionadas internamente.
     """
     # Generar subject por defecto si no se provee
     if not subject:

@@ -22,3 +22,9 @@ Sistema convergente para detección de intrusos combinando seguridad física (c�
 
 ## Status
 Actualmente en fase de inicialización (scaffolding base).
+
+## Módulos del Sistema
+
+*   **[Logs (L0)](./logs/):** Sistema de auditoría forense basado en SQLite con fallback text-based.
+*   **[Alerts (L1)](./alerts/):** Sistema de notificaciones SMTP tolerante a fallos con soporte MIME y telemetría granular.
+ 
