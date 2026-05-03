@@ -1,5 +1,7 @@
 import smtplib
 import os
+import mimetypes
+from pathlib import Path
 from email.message import EmailMessage
 from logs import get_logger
 
@@ -37,6 +39,48 @@ def send_security_alert(
     msg['Subject'] = subject
     msg['From'] = sender_email
     msg['To'] = receiver_email
+    
+    # --- PROCESAMIENTO DE ADJUNTOS (Commit #2) ---
+    for path_str in (attachment_paths or []):
+        path = Path(path_str)
+        
+        try:
+            # Validar existencia antes de consultar tamaño
+            if not path.exists():
+                # TODO(commit-3): logger.warning here on skip (FileNotFound)
+                continue
+                
+            # Validar tamaño (15 MB límite conservador pre-Base64)
+            if path.stat().st_size > 15 * 1024 * 1024:
+                # TODO(commit-3): logger.warning here on skip (Size limit exceeded)
+                continue
+                
+            # Detección de MIME type
+            ctype, encoding = mimetypes.guess_type(str(path))
+            if ctype is None or encoding is not None:
+                # Fallback estricto a octet-stream si es desconocido o está comprimido
+                ctype = "application/octet-stream"
+                
+            maintype, subtype = ctype.split("/", 1)
+            
+            # Leer y adjuntar de forma segura
+            with open(path, "rb") as f:
+                file_data = f.read()
+                
+            msg.add_attachment(
+                file_data, 
+                maintype=maintype, 
+                subtype=subtype, 
+                filename=path.name
+            )
+        except PermissionError:
+            # TODO(commit-3): logger.warning here on skip (PermissionError)
+            continue
+        except Exception:
+            # Catch-all de lectura para no abortar el bucle por un archivo corrupto
+            # TODO(commit-3): logger.warning here on skip (Unexpected error reading attachment)
+            continue
+    # ---------------------------------------------
     
     try:
         # Inicializar cliente SMTP con STARTTLS y timeout defensivo
