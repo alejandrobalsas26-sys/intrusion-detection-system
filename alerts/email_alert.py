@@ -5,6 +5,9 @@ from pathlib import Path
 from email.message import EmailMessage
 from logs import get_logger
 
+# Constantes de configuración del módulo
+MAX_ATTACHMENT_SIZE_BYTES = 15 * 1024 * 1024  # 15 MB conservador para pre-Base64
+
 # Inyectar dependencia del logger a nivel de módulo (Lectura A)
 logger = get_logger("alerts")
 
@@ -50,8 +53,8 @@ def send_security_alert(
                 # TODO(commit-3): logger.warning here on skip (FileNotFound)
                 continue
                 
-            # Validar tamaño (15 MB límite conservador pre-Base64)
-            if path.stat().st_size > 15 * 1024 * 1024:
+            # Validar tamaño
+            if path.stat().st_size > MAX_ATTACHMENT_SIZE_BYTES:
                 # TODO(commit-3): logger.warning here on skip (Size limit exceeded)
                 continue
                 
