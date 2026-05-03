@@ -28,6 +28,10 @@ def send_security_alert(
     if not all([sender_email, sender_password, receiver_email]):
         return False
         
+    # Twelve-Factor App: Configuración externalizada con defaults seguros
+    smtp_host = os.getenv("SMTP_HOST", "smtp.gmail.com")
+    smtp_port = int(os.getenv("SMTP_PORT", "587"))
+        
     msg = EmailMessage()
     msg.set_content(alert_message)
     msg['Subject'] = subject
@@ -35,8 +39,8 @@ def send_security_alert(
     msg['To'] = receiver_email
     
     try:
-        # Inicializar cliente SMTP con STARTTLS (Puerto 587) asumiendo Gmail por ahora
-        with smtplib.SMTP("smtp.gmail.com", 587) as server:
+        # Inicializar cliente SMTP con STARTTLS y timeout defensivo
+        with smtplib.SMTP(smtp_host, smtp_port, timeout=30) as server:
             server.starttls()
             server.login(sender_email, sender_password)
             server.send_message(msg)
