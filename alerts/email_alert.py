@@ -31,6 +31,7 @@ def send_security_alert(
     
     # Validación básica de credenciales
     if not all([sender_email, sender_password, receiver_email]):
+        logger.error("Missing SMTP credentials in environment. Alert aborted.")
         return False
         
     # Twelve-Factor App: Configuración externalizada con defaults seguros
@@ -43,19 +44,19 @@ def send_security_alert(
     msg['From'] = sender_email
     msg['To'] = receiver_email
     
-    # --- PROCESAMIENTO DE ADJUNTOS (Commit #2) ---
+    # --- PROCESAMIENTO DE ADJUNTOS (Commit #2 y #3) ---
     for path_str in (attachment_paths or []):
         path = Path(path_str)
         
         try:
             # Validar existencia antes de consultar tamaño
             if not path.exists():
-                # TODO(commit-3): logger.warning here on skip (FileNotFound)
+                logger.warning("Attachment skipped: File not found at %s", path)
                 continue
                 
             # Validar tamaño
             if path.stat().st_size > MAX_ATTACHMENT_SIZE_BYTES:
-                # TODO(commit-3): logger.warning here on skip (Size limit exceeded)
+                logger.warning("Attachment skipped: Size exceeds limit (%s bytes) for %s", MAX_ATTACHMENT_SIZE_BYTES, path)
                 continue
                 
             # Detección de MIME type
@@ -77,11 +78,11 @@ def send_security_alert(
                 filename=path.name
             )
         except PermissionError:
-            # TODO(commit-3): logger.warning here on skip (PermissionError)
+            logger.warning("Attachment skipped: Permission denied reading %s", path)
             continue
         except Exception:
             # Catch-all de lectura para no abortar el bucle por un archivo corrupto
-            # TODO(commit-3): logger.warning here on skip (Unexpected error reading attachment)
+            logger.exception("Attachment skipped: Unexpected error reading %s", path)
             continue
     # ---------------------------------------------
     
@@ -91,10 +92,15 @@ def send_security_alert(
             server.starttls()
             server.login(sender_email, sender_password)
             server.send_message(msg)
+        logger.info("SMTP security alert '%s' sent successfully to %s", subject, receiver_email)
         return True
-    except smtplib.SMTPException:
-        # El manejo de errores y la instrumentación del logger vendrán en el Commit #3
+    except smtplib.SMTPAuthenticationError:
+        logger.critical("SMTP Authentication failed. Check EMAIL_SENDER and App Passwords. Alert not sent!")
+        return False
+    except (smtplib.SMTPConnectError, TimeoutError, smtplib.SMTPServerDisconnected) as e:
+        logger.error("SMTP connection failed or timed out: %s. Alert degraded.", e)
         return False
     except Exception:
         # Catch-all base temporal
+        logger.exception("Unexpected exception during SMTP transmission. Alert failed.")
         return False
