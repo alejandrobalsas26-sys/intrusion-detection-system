@@ -100,7 +100,10 @@ def send_security_alert(
     except (smtplib.SMTPConnectError, TimeoutError, smtplib.SMTPServerDisconnected) as e:
         logger.error("SMTP connection failed or timed out: %s. Alert degraded.", e)
         return False
+    except smtplib.SMTPException as e:
+        logger.error("SMTP protocol error: %s", e)
+        return False
     except Exception:
-        # Catch-all base temporal
+        # Safety net: logs unexpected exceptions with full traceback to forensic DB.
         logger.exception("Unexpected exception during SMTP transmission. Alert failed.")
         return False
