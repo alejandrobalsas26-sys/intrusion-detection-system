@@ -1,32 +1,17 @@
-# Python compilado
-__pycache__/
-*.py[cod]
-
-# Entornos Virtuales
+# Virtual Environments
 venv/
 .venv/
 
-# IDEs y SO
+# IDEs and OS
 .vscode/
 .DS_Store
 Thumbs.db
 
-# Logs y Bases de datos locales
-*.log
-*.sqlite3
-
-# Secretos y Credenciales (NUNCA SUBIR)
-.env   
-
-# --- Security Exclusions for Logger ---
-# Global exclusions
-*.sqlite3
-*.sqlite3-wal
-*.sqlite3-shm
-
-# Directory specific exclusions (Shield)
+# Logs and Databases
 logs/*
-# Allow source code and DDL
 !logs/*.py
 !logs/*.sql
-!logs/__init__.py  
+!logs/__init__.py
+
+# Secrets and Credentials (NEVER UPLOAD)
+.env
