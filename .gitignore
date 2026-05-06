@@ -8,10 +8,12 @@ venv/
 Thumbs.db
 
 # Logs and Databases
+# Logs and Databases
 logs/*
 !logs/*.py
 !logs/*.sql
 !logs/__init__.py
+!logs/*.md
 
 # Secrets and Credentials (NEVER UPLOAD)
 .env
