@@ -1,0 +1,3 @@
+# Environment variable loading for application entrypoint (Strict Pinning)
+python-dotenv==1.2.2
+
