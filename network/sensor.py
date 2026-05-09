@@ -1,4 +1,6 @@
 import os
+import sys
+import ctypes
 import threading
 from scapy.all import sniff, Packet
 
@@ -11,6 +13,17 @@ from network.detectors.arp_detector import ArpDetector
 
 logger = get_logger("network_sensor")
 
+def _check_os_privileges() -> bool:
+    """Cross-platform check for root/administrator privileges."""
+    try:
+        if os.name == 'nt':
+            return ctypes.windll.shell32.IsUserAnAdmin() != 0
+        else:
+            return os.geteuid() == 0
+    except Exception as e:
+        logger.error("Failed to determine OS privileges: %s", str(e))
+        return False
+
 def start_sensor() -> threading.Thread:
     """
     Initializes and starts the network sensor in a background daemon thread.
@@ -18,6 +31,19 @@ def start_sensor() -> threading.Thread:
     """
     logger.info("Initializing L2 Network Sensor...")
     
+    # 1. Consent Gate Validation
+    consent = os.getenv("NETWORK_MONITOR_CONSENT", "").strip().lower()
+    if consent != "true":
+        error_msg = "NETWORK_MONITOR_CONSENT is not 'true'. Legal disclaimer not acknowledged. Aborting."
+        logger.critical(error_msg)
+        raise PermissionError(error_msg)
+
+    # 2. OS Privilege Validation
+    if not _check_os_privileges():
+        error_msg = "Insufficient OS privileges. Raw socket capture requires root/administrator execution."
+        logger.critical(error_msg)
+        raise PermissionError(error_msg)
+
     # Initialize domain logic with env thresholds (Lifecycle bounded to start_sensor)
     arp_max_changes = int(os.getenv("ARP_SPOOF_MAX_CHANGES", "1"))
     arp_window = int(os.getenv("ARP_SPOOF_WINDOW_MINUTES", "5")) * 60
