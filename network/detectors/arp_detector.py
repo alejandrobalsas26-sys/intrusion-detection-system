@@ -13,7 +13,7 @@ class ArpDetector:
         self.state: Dict[str, Deque[Tuple[float, str]]] = defaultdict(deque)
 
     def process_packet(self, pkt: Packet) -> Optional[DetectionEvent]:
-        # Only process packets containing an ARP layer
+        # Solo procesar paquetes que contengan una capa ARP
         if not pkt.haslayer(ARP):
             return None
         
@@ -23,25 +23,25 @@ class ArpDetector:
         now = time.monotonic()
         history = self.state[ip_src]
 
-        # 1. Lazy Eviction: Remove entries outside the sliding window
+        # 1. Lazy Eviction: Quitar entradas fuera de la ventana de tiempo
         while history and history[0][0] < (now - self.window_seconds):
             history.popleft()
 
-        # 2. Deduplication: Only append if the MAC is different from the last seen
+        # 2. Deduplicación: Solo añadir si la MAC es distinta a la última vista
         if not history or history[-1][1] != mac_src:
             history.append((now, mac_src))
 
-        # 3. Anomaly Detection: Number of changes is len(history) - 1
+        # 3. Detección de anomalías: El número de cambios es len(history) - 1
         changes = len(history) - 1
 
-        if changes >= self.max_changes:
+        if changes > self.max_changes:
             mac_history = [mac for _, mac in history]
             
             event = DetectionEvent(
                 level="CRITICAL",
                 module_source="network",
                 detector_name="arp_spoofing",
-                message=f"ARP Spoofing detected for IP {ip_src}. MAC changed {changes} times within window.",
+                message=f"ARP Spoofing detectado para IP {ip_src}. MAC cambio {changes} veces en la ventana.",
                 timestamp=time.time(),
                 context={
                     "ip_address": ip_src,
@@ -51,10 +51,9 @@ class ArpDetector:
                 }
             )
             
-            # Clear state to prevent alert flooding within the same window
+            # Limpiar estado para evitar spam de alertas
             self.state[ip_src].clear()
             
             return event
 
         return None
-        
