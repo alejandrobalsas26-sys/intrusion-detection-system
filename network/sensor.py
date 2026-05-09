@@ -1,5 +1,4 @@
 import os
-import sys
 import ctypes
 import threading
 from scapy.all import sniff, Packet
@@ -21,7 +20,7 @@ def _check_os_privileges() -> bool:
         else:
             return os.geteuid() == 0
     except Exception as e:
-        logger.error("Failed to determine OS privileges: %s", str(e))
+        logger.error("Failed to determine OS privileges: %s", e)
         return False
 
 def start_sensor() -> threading.Thread:
@@ -69,7 +68,7 @@ def start_sensor() -> threading.Thread:
                     subject=f"[{event.level}] IDS Alert: {event.detector_name}"
                 )
             except Exception as e:
-                logger.error("Failed to dispatch L1 alert: %s", str(e))
+                logger.error("Failed to dispatch L1 alert: %s", e)
 
     def _sniff_worker():
         """Background worker for Scapy continuous packet capture."""
