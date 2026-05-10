@@ -47,14 +47,19 @@ class TestSmokeArp(unittest.TestCase):
         self.assertEqual(kwargs['event_level'], "CRITICAL")
         self.assertIn("ARP Spoofing detected", kwargs['alert_message'])
 
-        # Step 4: Validate L0 (SQLite) DB structure verification
+        # Step 4: Validate L0 (SQLite) Real DB Integration
         conn = sqlite3.connect(os.environ["DB_PATH"])
         cursor = conn.cursor()
-        cursor.execute("CREATE TABLE IF NOT EXISTS audit_events (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp REAL, level TEXT, module_source TEXT, detector_name TEXT, message TEXT, context_data TEXT)")
-        conn.commit()
+        
+        # We query the DB to ensure the logger bootstrap worked and the event was saved.
+        rows = cursor.execute(
+            "SELECT level, module_source, message FROM audit_events WHERE level = 'CRITICAL'"
+        ).fetchall()
+        
         conn.close()
-        self.assertTrue(True)
+        
+        self.assertEqual(len(rows), 1, "Expected exactly one CRITICAL event in audit DB")
+        self.assertIn("ARP Spoofing detected", rows[0][2])
 
 if __name__ == '__main__':
     unittest.main()
-    

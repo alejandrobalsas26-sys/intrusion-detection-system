@@ -44,6 +44,7 @@ class ArpDetector:
                 message=f"ARP Spoofing detected for IP {ip_src}. MAC changed {changes} times within window.",
                 timestamp=time.time(),
                 context={
+                    "detector_name": "arp_spoofing",
                     "ip_address": ip_src,
                     "mac_history": mac_history,
                     "window_seconds": self.window_seconds,
@@ -57,4 +58,3 @@ class ArpDetector:
             return event
 
         return None
-        
