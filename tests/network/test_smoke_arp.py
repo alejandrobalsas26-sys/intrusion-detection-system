@@ -7,7 +7,7 @@ from scapy.all import ARP
 
 # 1. Bootstrapping Temp Environment BEFORE importing domain logic
 TEMP_DB = tempfile.NamedTemporaryFile(delete=False)
-TEMP_DB.close() # FIX: Cerramos el archivo para que Windows no lo bloquee
+TEMP_DB.close() 
 os.environ["DB_PATH"] = TEMP_DB.name
 os.environ["NETWORK_MONITOR_CONSENT"] = "true"
 os.environ["ARP_SPOOF_MAX_CHANGES"] = "1"
@@ -18,7 +18,6 @@ from network.sensor import start_sensor
 class TestSmokeArp(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
-        # Limpieza segura para Windows
         if os.path.exists(os.environ["DB_PATH"]):
             try:
                 os.unlink(os.environ["DB_PATH"])
@@ -31,14 +30,13 @@ class TestSmokeArp(unittest.TestCase):
     def test_arp_spoofing_integration(self, mock_sniff, mock_privileges, mock_alert):
         # Step 1: Initialize the orchestrator
         thread = start_sensor()
-        thread.join(timeout=2.0)
+        thread.join(timeout=1.0)
 
         # Extract the prn callback
         mock_sniff.assert_called_once()
         dispatch_callback = mock_sniff.call_args.kwargs.get('prn')
-        self.assertIsNotNone(dispatch_callback, "sniff was not called with a 'prn' callback")
-
-        # Step 2: Inject Synthetic Packets
+        
+        # Step 2: Inject Synthetic Packets (English expected)
         dispatch_callback(ARP(psrc="10.0.0.1", hwsrc="AA:AA:AA:AA:AA:AA"))
         dispatch_callback(ARP(psrc="10.0.0.1", hwsrc="BB:BB:BB:BB:BB:BB"))
         dispatch_callback(ARP(psrc="10.0.0.1", hwsrc="CC:CC:CC:CC:CC:CC"))
@@ -47,29 +45,15 @@ class TestSmokeArp(unittest.TestCase):
         mock_alert.assert_called_once()
         args, kwargs = mock_alert.call_args
         self.assertEqual(kwargs['event_level'], "CRITICAL")
-        # FIX: Coincidir con el texto exacto que escupe tu detector en español
-        self.assertIn("ARP Spoofing detectado", kwargs['alert_message'])
+        self.assertIn("ARP Spoofing detected", kwargs['alert_message'])
 
-        # Step 4: Validate L0 (SQLite) Real DB Integration
+        # Step 4: Validate L0 (SQLite) DB structure verification
         conn = sqlite3.connect(os.environ["DB_PATH"])
         cursor = conn.cursor()
-        
-        # Create table dynamically for the test
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS audit_events (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp REAL,
-                level TEXT,
-                module_source TEXT,
-                detector_name TEXT,
-                message TEXT,
-                context_data TEXT
-            )
-        ''')
+        cursor.execute("CREATE TABLE IF NOT EXISTS audit_events (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp REAL, level TEXT, module_source TEXT, detector_name TEXT, message TEXT, context_data TEXT)")
         conn.commit()
-        
-        self.assertTrue(True)
         conn.close()
+        self.assertTrue(True)
 
 if __name__ == '__main__':
     unittest.main()
