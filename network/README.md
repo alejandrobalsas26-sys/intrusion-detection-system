@@ -6,16 +6,20 @@ Execution requires the `NETWORK_MONITOR_CONSENT="true"` environment variable to 
 
 ## Implementation Status
 - **v1 (Branch 1):** ARP Spoofing detection — **Operational**.
-- **v2 (Branch 2):** SYN Scan detection — *Pending*.
+- **v2 (Branch 2):** TCP SYN Scan detection — **Operational**.
 
 ## Architecture Overview
-The network module operates as the L2 Domain Core within a Hexagonal Architecture. It passively sniffs traffic and dispatches detection events to L0 (SQLite) and L1 (Email Alerts).
+The network module operates as the L2 Domain Core within a Hexagonal Architecture. The orchestrator uses a **Plug-in Architecture** to route filtered packets through multiple specialized detectors in parallel.
 
 ```text
 [Raw Sockets] --> (BPF Filter) --> start_sensor() 
                                         |
-                                        v
-                                 ArpDetector (L2)
+                 +----------------------+----------------------+
+                 |                                             |
+                 v                                             v
+          ArpDetector (L2)                              SynDetector (L2)
+                 |                                             |
+                 +----------------------+----------------------+
                                         |
                                  (DetectionEvent)
                                         |
