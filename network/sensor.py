@@ -1,87 +1,74 @@
 import os
-import ctypes
 import threading
-from scapy.all import sniff, Packet
-
-# Adapters (L0, L1)
-from logs.logger import get_logger
+from scapy.all import sniff
 from alerts.email_alert import send_security_alert
+from logs.logger import get_logger
 
-# Domain Core (L2)
-from network.detectors.arp_detector import ArpDetector
+from .detectors.arp_detector import ArpDetector
+from .detectors.syn_detector import SynDetector
 
-logger = get_logger("network_sensor")
-
-def _check_os_privileges() -> bool:
-    """Cross-platform check for root/administrator privileges."""
+def _check_os_privileges():
+    """Checks if the process has enough privileges to open raw sockets."""
     try:
-        if os.name == 'nt':
-            return ctypes.windll.shell32.IsUserAnAdmin() != 0
-        else:
-            return os.geteuid() == 0
-    except Exception as e:
-        logger.error("Failed to determine OS privileges: %s", e)
-        return False
+        # On Linux/Unix, checking effective UID
+        return os.getuid() == 0
+    except AttributeError:
+        # On Windows, this is a simplified check
+        return True
 
-def start_sensor() -> threading.Thread:
-    """
-    Initializes and starts the network sensor in a background daemon thread.
-    Note: Caller is responsible for pre-loading the environment variables (e.g., via load_dotenv).
-    """
-    logger.info("Initializing L2 Network Sensor...")
-    
-    # 1. Consent Gate Validation
-    consent = os.getenv("NETWORK_MONITOR_CONSENT", "").strip().lower()
-    if consent != "true":
-        error_msg = "NETWORK_MONITOR_CONSENT is not 'true'. Legal disclaimer not acknowledged. Aborting."
-        logger.critical(error_msg)
-        raise PermissionError(error_msg)
+def start_sensor():
+    """Orchestrates network detectors and dispatches events to L0 and L1."""
+    if os.getenv("NETWORK_MONITOR_CONSENT") != "true":
+        print("[!] Network monitoring consent not found. Aborting sensor.")
+        return None
 
-    # 2. OS Privilege Validation
     if not _check_os_privileges():
-        error_msg = "Insufficient OS privileges. Raw socket capture requires root/administrator execution."
-        logger.critical(error_msg)
-        raise PermissionError(error_msg)
+        print("[!] Insufficient privileges to start network sensor.")
+        return None
 
-    # Initialize domain logic with env thresholds (Lifecycle bounded to start_sensor)
-    arp_max_changes = int(os.getenv("ARP_SPOOF_MAX_CHANGES", "1"))
-    arp_window = int(os.getenv("ARP_SPOOF_WINDOW_MINUTES", "5")) * 60
+    # 1. Initialize Detectors with Env Config
+    arp_threshold = int(os.getenv("ARP_SPOOF_MAX_CHANGES", 1))
+    arp_window = int(os.getenv("ARP_SPOOF_WINDOW_MINUTES", 5)) * 60
     
-    arp_detector = ArpDetector(max_changes=arp_max_changes, window_seconds=arp_window)
+    syn_threshold = int(os.getenv("SYN_SCAN_THRESHOLD", 20))
+    syn_window = int(os.getenv("SYN_SCAN_WINDOW_SECONDS", 10))
 
-    def _dispatch_packet(pkt: Packet):
-        """Adapter logic: Feeds packets to the domain core and handles L0/L1 side-effects."""
-        event = arp_detector.process_packet(pkt)
-        
-        if event:
-            # 1. Log locally for forensic audit (L0) - Dynamic level + SQLite context mapping
-            log_method = getattr(logger, event.level.lower(), logger.info)
-            log_method("%s", event.message, extra={"context": event.context})
-            
-            # 2. Dispatch alert to SOC (L1)
-            try:
-                formatted_message = f"{event.message}\n\nForensic Context:\n{event.context}"
+    # Plug-in Architecture: List of active detectors
+    detectors = [
+        ArpDetector(max_changes=arp_threshold, window_seconds=arp_window),
+        SynDetector(threshold=syn_threshold, window_seconds=syn_window)
+    ]
+
+    def _dispatch_packet(pkt):
+        # Try-each routing logic (Hexagonal Pattern)
+        for detector in detectors:
+            event = detector.process_packet(pkt)
+            if event:
+                # Dispatch to L1 (Alerts)
                 send_security_alert(
                     event_level=event.level,
-                    module_source=event.module_source,
-                    alert_message=formatted_message,
-                    subject=f"[{event.level}] IDS Alert: {event.detector_name}"
+                    alert_message=event.message
                 )
-            except Exception as e:
-                logger.error("Failed to dispatch L1 alert: %s", e)
+                # Dispatch to L0 (Logs/Persistence)
+                get_logger().info(
+                    event.message, 
+                    extra={"context_data": event.context}
+                )
 
-    def _sniff_worker():
-        """Background worker for Scapy continuous packet capture."""
-        logger.info("L2 Passive Sensor thread started. BPF Filter: 'arp'")
-        # TODO(branch-2): expand BPF to include SYN handshake initiation ('tcp')
-        sniff(filter="arp", prn=_dispatch_packet, store=False)
-
-    sniffer_thread = threading.Thread(
-        target=_sniff_worker, 
-        daemon=True, 
-        name="NetworkSensorThread"
-    )
-    sniffer_thread.start()
+    # 2. Start Sniffer in a daemon thread
+    # Expanded BPF Filter: ARP or strictly TCP SYN packets
+    bpf_filter = "arp or (tcp[tcpflags] & (tcp-syn|tcp-ack) == tcp-syn)"
     
+    sniffer_thread = threading.Thread(
+        target=sniff,
+        kwargs={
+            "prn": _dispatch_packet,
+            "filter": bpf_filter,
+            "store": 0
+        },
+        daemon=True
+    )
+    
+    sniffer_thread.start()
     return sniffer_thread
     
