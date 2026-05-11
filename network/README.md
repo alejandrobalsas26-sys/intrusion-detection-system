@@ -27,4 +27,4 @@ The network module operates as the L2 Domain Core within a Hexagonal Architectur
                              |                     |
                              v                     v
                      get_logger() (L0)    send_security_alert() (L1)
-                     
+              
