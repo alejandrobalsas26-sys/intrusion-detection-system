@@ -1,3 +1,7 @@
 # Environment variable loading for application entrypoint (Strict Pinning)
 python-dotenv==1.2.2
 scapy==2.5.0
+# Identity & MFA Layer
+cryptography==48.0.0
+pyotp==2.9.0
+qrcode==8.2
