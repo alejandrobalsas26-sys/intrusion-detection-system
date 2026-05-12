@@ -3,31 +3,36 @@ import pyotp
 import hashlib
 import secrets
 import string
+import time
 from typing import List, Tuple
 from dataclasses import dataclass, field
-from datetime import datetime
 from .storage import DB_PATH
 from .crypto import crypto
 
 @dataclass
 class AuthEvent:
-    """Dataclass para telemetría de autenticación (Sibling de DetectionEvent)"""
+    """Dataclass for authentication telemetry (sibling of DetectionEvent)."""
     level: str
     event_name: str
     message: str
     module_source: str = "auth"
-    timestamp: float = field(default_factory=lambda: datetime.now().timestamp())
+    timestamp: float = field(default_factory=time.time)
     context: dict = field(default_factory=dict)
 
 class UserAlreadyExistsError(Exception):
     pass
 
-def _hash_recovery_code(code: str) -> str:
-    """Hashes a recovery code using scrypt (built-in, memory-hard)."""
-    salt = b"ids_mfa_salt_fixed" # In production, use unique per-code salts
-    # n=16384 (CPU/mem cost), r=8 (block size), p=1 (parallelization)
+def _hash_recovery_code(code: str, salt: bytes = None) -> Tuple[str, bytes]:
+    """
+    Hashes a recovery code using scrypt with a unique per-code salt.
+    Returns: (hex_hash, salt_used)
+    """
+    if salt is None:
+        salt = secrets.token_bytes(16) # Generate a random 16-byte salt
+    
+    # n=16384 (cost), r=8 (block size), p=1 (parallelization)
     hashed = hashlib.scrypt(code.encode(), salt=salt, n=16384, r=8, p=1)
-    return hashed.hex()
+    return hashed.hex(), salt
 
 def enroll_user(username: str) -> Tuple[str, List[str]]:
     """
@@ -63,12 +68,12 @@ def enroll_user(username: str) -> Tuple[str, List[str]]:
             )
             user_id = cursor.lastrowid
 
-            # Insert Hashed Recovery Codes
+            # Insert Hashed Recovery Codes with Unique Salts
             for code in recovery_codes:
-                hashed = _hash_recovery_code(code)
+                hashed, salt = _hash_recovery_code(code)
                 cursor.execute(
-                    "INSERT INTO recovery_codes (user_id, hashed_code) VALUES (?, ?)",
-                    (user_id, hashed)
+                    "INSERT INTO recovery_codes (user_id, hashed_code, salt) VALUES (?, ?, ?)",
+                    (user_id, hashed, salt)
                 )
             
             conn.commit()
