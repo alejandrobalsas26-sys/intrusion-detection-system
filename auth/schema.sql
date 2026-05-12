@@ -24,11 +24,11 @@ CREATE TABLE IF NOT EXISTS auth_attempts (
     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
     success BOOLEAN NOT NULL,
     ip_address TEXT,
-    token_used TEXT, -- To prevent replay within 90s window
+    token_fingerprint TEXT NOT NULL, -- Cryptographic fingerprint of the token
     FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
 );
 
-CREATE INDEX IF NOT EXISTS idx_auth_attempts_user_time ON auth_attempts(user_id, timestamp);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_replay_protection ON auth_attempts(user_id, token_fingerprint);
 
 -- Token Blacklist
 CREATE TABLE IF NOT EXISTS token_blacklist (
