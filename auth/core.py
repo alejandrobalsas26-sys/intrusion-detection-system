@@ -4,8 +4,20 @@ import hashlib
 import secrets
 import string
 from typing import List, Tuple
+from dataclasses import dataclass, field
+from datetime import datetime
 from .storage import DB_PATH
 from .crypto import crypto
+
+@dataclass
+class AuthEvent:
+    """Dataclass para telemetría de autenticación (Sibling de DetectionEvent)"""
+    level: str
+    event_name: str
+    message: str
+    module_source: str = "auth"
+    timestamp: float = field(default_factory=lambda: datetime.now().timestamp())
+    context: dict = field(default_factory=dict)
 
 class UserAlreadyExistsError(Exception):
     pass
@@ -69,4 +81,12 @@ def enroll_user(username: str) -> Tuple[str, List[str]]:
     uri = totp.provisioning_uri(name=username, issuer_name="Antigravity-IDS")
     
     return uri, recovery_codes
+
+def verify_token(username: str, token: str) -> AuthEvent:
+    """Stub: Verifica la validez de un token TOTP y aplica políticas de seguridad."""
+    raise NotImplementedError("Implemented in commit #2")
+
+def use_recovery_code(username: str, code: str) -> AuthEvent:
+    """Stub: Valida y consume un código de recuperación de un solo uso."""
+    raise NotImplementedError("Implemented in commit #4")
     
