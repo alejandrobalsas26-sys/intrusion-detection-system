@@ -40,23 +40,32 @@ def start_sensor():
     ]
 
     def _dispatch_packet(pkt):
-        # Try-each routing logic (Hexagonal Pattern)
+        """Internal callback for scapy sniff."""
         for detector in detectors:
-            event = detector.process_packet(pkt)
-            if event:
-                # Dispatch to L1 (Alerts)
-                send_security_alert(
-                    event_level=event.level,
-                    alert_message=event.message
-                )
-                # Dispatch to L0 (Logs/Persistence)
-                get_logger().info(
-                    event.message, 
-                    extra={"context_data": event.context}
-                )
+            try:
+                event = detector.process_packet(pkt)
+                
+                # GUARDIA: Solo procesamos si el detector encontró algo
+                if event:
+                    # A. Dispatch to L1 (Alerts)
+                    send_security_alert(
+                        event_level=event.level,
+                        alert_message=event.message
+                    )
+
+                    # B. Dispatch to L0 (Logs/Persistence)
+                    logger = get_logger("network_sensor")
+                    
+                    # Mapeo dinámico de nivel (critical, warning, info)
+                    log_func = getattr(logger, event.level.lower(), logger.info)
+                    log_func(
+                        f"DetectionEvent: {event.level} from {event.detector_name} - {event.message}"
+                    )
+            except Exception as e:
+                # Evitamos que un error en un detector mate al sniffer
+                print(f"[-] Error in detector {detector.__class__.__name__}: {e}")
 
     # 2. Start Sniffer in a daemon thread
-    # Expanded BPF Filter: ARP or strictly TCP SYN packets
     bpf_filter = "arp or (tcp[tcpflags] & (tcp-syn|tcp-ack) == tcp-syn)"
     
     sniffer_thread = threading.Thread(
