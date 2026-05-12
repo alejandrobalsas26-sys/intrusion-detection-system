@@ -1,33 +1,31 @@
-# L7: Authentication & MFA Domain Core
+# Module: Auth (Layer 7 - Identity)
 
-## Overview
-This module handles the Identity Perimeter of the IDS. It implements a Time-based One-Time Password (TOTP) system according to RFC 6238, providing a Layer 7 security gate for administrative actions and system access.
+## Security Model
+This module implements a hardened Multi-Factor Authentication (MFA) gateway using:
+- **TOTP (RFC 6238):** Time-based One-Time Passwords.
+- **AES-256 (Fernet):** Symmetric encryption for secrets at rest.
+- **Scrypt:** High-cost hashing for recovery codes.
 
-## Threat Model
+## Intent
+To ensure that only authorized analysts can access the IDS orchestrator and forensic logs, preventing unauthorized lateral movement within the detection system.
 
-| Threat Vector | Status | Mitigation Strategy |
-| :--- | :--- | :--- |
-| **Credential Stuffing** | ✅ Defended | MFA token requirement invalidates stolen passwords. |
-| **Brute Force (MFA)** | ✅ Defended | Exponential backoff policy in `verify_token`. |
-| **Replay Attacks** | ✅ Defended | Strict single-use token enforcement (90s window). |
-| **SIM Swapping** | ✅ Defended | App-based TOTP eliminates SMS dependency. |
-| **Recovery Code Guessing** | ✅ Defended | Hashed storage using `hashlib.scrypt` (GPU-resistant). |
-| **Phishing (Real-time)** | ⚠️ Limited | TOTP does not bind to TLS. FIDO2 recommended for v2. |
-| **Server Compromise** | ⚠️ Limited | Secrets encrypted with Fernet (KEK). Risk if .env is stolen. |
+## Configuration
+Configure in `.env`:
+```ini
+# Generate key with: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+MFA_ENCRYPTION_KEY=your_fernet_key_here
+MFA_BACKOFF_THRESHOLD=5
+MFA_RECOVERY_CODES_COUNT=10
+```
 
-## Security Implementation Details
+## Usage
+The module provides an `AuthManager` to handle:
+- **Registration:** Adding new analysts (generates TOTP secrets and encrypted recovery codes).
+- **Login:** Verifying TOTP codes and handling rate-limiting (backoff).
+- **Recovery:** Using backup codes when TOTP is unavailable.
 
-### Encryption at Rest (Fernet)
-TOTP shared secrets are never stored in plaintext. They are encrypted using **Fernet (AES-128 in CBC mode with HMAC-SHA256)**. 
-- **KEK:** Loaded from `MFA_ENCRYPTION_KEY`.
-- **Limitation:** KEK rotation is not automated in v1. Compromise requires full re-enrollment.
+## Security Analysis
+- **Identity:** Validates the human operator.
+- **Confidentiality:** Secrets (TOTP keys, recovery codes) are encrypted at rest.
+- **Integrity:** The `token_blacklist` prevents replay attacks.
 
-### Recovery Codes (Scrypt)
-Backup codes are stored as one-way hashes.
-- **Algorithm:** `hashlib.scrypt`.
-- **Performance Note:** Verifying a recovery code is intentionally CPU/Memory intensive to prevent hardware-accelerated cracking. A delay of ~0.5s - 1.0s is expected and constitutes a security feature.
-
-## User Lifecycle
-1. **Enrollment:** Generates a new random secret and 10 recovery codes. Returns a provisioning URI for Google Authenticator/Authy.
-2. **Verification:** Validates the 6-digit pin against the sliding window.
-3. **Recovery:** Allows access via a one-time backup code if the primary device is lost.
