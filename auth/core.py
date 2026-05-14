@@ -5,6 +5,7 @@ import secrets
 import string
 import time
 import os
+import hmac
 from typing import List, Tuple
 from dataclasses import dataclass, field
 from cryptography.fernet import InvalidToken
@@ -49,6 +50,10 @@ def _hash_recovery_code(code: str, salt: bytes = None) -> Tuple[str, bytes]:
 def _token_fingerprint(user_id: int, token: str) -> str:
     """Deterministic non-reversible fingerprint for replay detection."""
     return hashlib.sha256(f"{user_id}:{token}".encode()).hexdigest()
+
+def _recovery_fingerprint(user_id: int, code: str) -> str:
+    """Deterministic non-reversible fingerprint for recovery code replay detection."""
+    return hashlib.sha256(f"recovery:{user_id}:{code}".encode()).hexdigest()
 
 def _calculate_backoff_delay(user_id: int) -> Tuple[int, int]:
     """Calculates exponential delay based on recent failed attempts."""
@@ -168,10 +173,8 @@ def verify_token(username: str, token: str) -> AuthEvent:
 
         # 5. Record Attempt and catch Race Conditions
         try:
-            cursor.execute("""
-                INSERT INTO auth_attempts (user_id, success, token_fingerprint)
-                VALUES (?, ?, ?)
-            """, (user_id, 1 if is_valid else 0, fingerprint))
+            cursor.execute("INSERT INTO auth_attempts (user_id, success, token_fingerprint) VALUES (?, ?, ?)",
+                           (user_id, 1 if is_valid else 0, fingerprint))
             conn.commit()
         except sqlite3.IntegrityError:
             conn.rollback()
@@ -190,5 +193,89 @@ def verify_token(username: str, token: str) -> AuthEvent:
                          context=_build_event_context("INVALID_TOKEN", backoff_seconds, failure_count))
 
 def use_recovery_code(username: str, code: str) -> AuthEvent:
-    """Validates and consumes a one-time recovery code (commit #4)."""
-    raise NotImplementedError("Implemented in commit #4")
+    """Validates and consumes a one-time recovery code from the user's stored set.
+    
+    Applies shared backoff, replay protection, and atomic consumption
+    upon successful scrypt-based hash match. Returns AuthEvent indicating
+    success or failure with forensic context.
+
+    Tech Debt: The validation loop uses an early 'break' on match. While 
+    hmac.compare_digest prevents value leaking, the break introduces a minor 
+    timing differential revealing the code's array position. Deferred to avoid 
+    a guaranteed ~1s UX penalty on valid recovery attempts.
+    """
+    _bootstrap_auth_db()
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        
+        # 1. Fetch User Data (Anti-enumeration applied)
+        cursor.execute("SELECT id FROM users WHERE username = ?", (username,))
+        user_row = cursor.fetchone()
+        
+        if not user_row:
+            return AuthEvent(level="WARNING", event_name="AUTH_FAILURE", 
+                             message=f"Authentication failed for user '{username}'.",
+                             context=_build_event_context("USER_NOT_FOUND"))
+        
+        user_id = user_row[0]
+
+        # 2. Shared Rate Limiting (Exponential Backoff)
+        backoff_seconds, failure_count = _calculate_backoff_delay(user_id)
+        if backoff_seconds > 0:
+            time.sleep(backoff_seconds)
+
+        # 3. Defense-in-depth: Replay Protection Check
+        fingerprint = _recovery_fingerprint(user_id, code)
+        cursor.execute("""
+            SELECT id FROM auth_attempts 
+            WHERE user_id = ? AND token_fingerprint = ? 
+            AND timestamp > datetime('now', '-90 seconds')
+        """, (user_id, fingerprint))
+        
+        if cursor.fetchone():
+            return AuthEvent(level="CRITICAL", event_name="REPLAY_ATTACK", 
+                             message=f"Replay attack detected for user '{username}'.",
+                             context=_build_event_context("TOKEN_REUSED_WINDOW", backoff_seconds, failure_count))
+
+        # 4. Fetch and Validate Recovery Codes
+        cursor.execute("SELECT id, hashed_code, salt FROM recovery_codes WHERE user_id = ?", (user_id,))
+        recovery_codes = cursor.fetchall()
+
+        matched_code_id = None
+        for row_id, stored_hash, salt in recovery_codes:
+            computed_hash, _ = _hash_recovery_code(code, salt)
+            # Constant-time hash comparison
+            if hmac.compare_digest(computed_hash, stored_hash):
+                matched_code_id = row_id
+                break 
+
+        # 5. Atomicity of Consumption (DELETE + INSERT wrapped in transaction)
+        try:
+            if matched_code_id:
+                # Valid Code: Delete it to prevent reuse and log success
+                cursor.execute("DELETE FROM recovery_codes WHERE id = ?", (matched_code_id,))
+                cursor.execute("""
+                    INSERT INTO auth_attempts (user_id, success, token_fingerprint)
+                    VALUES (?, 1, ?)
+                """, (user_id, fingerprint))
+                conn.commit()
+                return AuthEvent(level="INFO", event_name="AUTH_SUCCESS", 
+                                 message=f"User '{username}' authenticated successfully.",
+                                 context=_build_event_context("VALID_RECOVERY_CODE", backoff_seconds, failure_count))
+            else:
+                # Invalid Code: Log failure
+                cursor.execute("""
+                    INSERT INTO auth_attempts (user_id, success, token_fingerprint)
+                    VALUES (?, 0, ?)
+                """, (user_id, fingerprint))
+                conn.commit()
+                return AuthEvent(level="WARNING", event_name="AUTH_FAILURE", 
+                                 message=f"Authentication failed for user '{username}'.",
+                                 context=_build_event_context("INVALID_RECOVERY_CODE", backoff_seconds, failure_count))
+                                 
+        except sqlite3.IntegrityError:
+            # Pro-paranoid rollback: if logging fails, the code is NOT consumed.
+            conn.rollback()
+            return AuthEvent(level="CRITICAL", event_name="REPLAY_ATTACK", 
+                             message=f"Replay attack detected for user '{username}'.",
+                             context=_build_event_context("TOKEN_REUSED_RACE_CONDITION", backoff_seconds, failure_count))
