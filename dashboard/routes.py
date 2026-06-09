@@ -1,4 +1,5 @@
 import json
+import os
 import time
 
 from flask import (
@@ -6,6 +7,7 @@ from flask import (
     Response,
     current_app,
     flash,
+    jsonify,
     redirect,
     render_template,
     request,
@@ -13,24 +15,27 @@ from flask import (
     url_for,
 )
 
-from auth.core import verify_token
+from auth.core import get_user_role, verify_token
 from dashboard.queries import (
+    database_is_readable,
     get_active_users_count,
+    get_event_counts_by_level,
     get_fim_events_count,
+    get_incidents,
     get_network_events,
     get_network_events_count,
+    get_open_incidents_count,
     get_recent_audit_events,
 )
+from dashboard.security import get_limiter, login_required
 
 bp = Blueprint("main", __name__)
 
 
 @bp.route("/", methods=["GET"])
+@login_required
 def home() -> str:
     """Dashboard home: shows summary and recent audit events."""
-    if "user_id" not in session:
-        return redirect(url_for("main.login_form"))
-
     return render_template(
         "index.html",
         audit_events=get_recent_audit_events(50),
@@ -49,7 +54,23 @@ def login_form() -> str:
 
 @bp.route("/login", methods=["POST"])
 def login_submit() -> Response:
-    """Handle login submission with TOTP verification."""
+    """Handle login submission with TOTP verification.
+
+    Rate limited per client IP at the HTTP layer (fixed window) so a single
+    source can neither brute-force TOTP codes nor tie up worker threads in
+    the auth module's backoff path.
+    """
+    client_ip = request.remote_addr or "unknown"
+    allowed, retry_after = get_limiter().check(client_ip)
+    if not allowed:
+        response = current_app.response_class(
+            "Too many login attempts. Please retry later.\n",
+            status=429,
+            mimetype="text/plain",
+        )
+        response.headers["Retry-After"] = str(retry_after)
+        return response
+
     username = request.form.get("username", "").strip()
     token = request.form.get("totp_code", "").strip()
 
@@ -65,6 +86,8 @@ def login_submit() -> Response:
         session.permanent = True
         session["user_id"] = username
         session["authenticated_at"] = time.time()
+        # RBAC: bind the role at login time (users.role column).
+        session["role"] = get_user_role(username) or "analyst"
 
         return redirect(url_for("main.home"))
     else:
@@ -82,23 +105,33 @@ def logout() -> Response:
 
 
 @bp.route("/events/stream")
+@login_required
 def event_stream() -> Response:
-    """SSE endpoint: streams new audit events to authenticated clients."""
-    if "user_id" not in session:
-        return "", 401
+    """SSE endpoint: streams new audit events to authenticated clients.
 
+    The stream is bounded (SSE_MAX_LIFETIME_SECONDS, default 15 min — the
+    session lifetime) so a single client cannot hold a worker forever; EventSource
+    reconnects automatically, which re-runs the authentication check above.
+    Heartbeat comments keep intermediaries from buffering or killing the socket.
+    """
     import time as _time
+
+    max_lifetime = int(os.getenv("SSE_MAX_LIFETIME_SECONDS", "900"))
+    poll_interval = int(os.getenv("SSE_POLL_INTERVAL_SECONDS", "5"))
 
     def generate():
         last_id = 0
-        while True:
+        started = _time.monotonic()
+        while _time.monotonic() - started < max_lifetime:
             from dashboard.queries import get_audit_events_since
 
             rows = get_audit_events_since(last_id)
             for row in rows:
                 last_id = max(last_id, row.get("id", 0))
                 yield f"data: {json.dumps(row)}\n\n"
-            _time.sleep(5)
+            if not rows:
+                yield ": heartbeat\n\n"
+            _time.sleep(poll_interval)
 
     # NOTE: spec used `bp.current_app` which does not exist on a Blueprint;
     # using Flask's `current_app` proxy to access the app's response_class.
@@ -109,4 +142,79 @@ def event_stream() -> Response:
             "Cache-Control": "no-cache",
             "X-Accel-Buffering": "no",
         },
+    )
+
+
+@bp.route("/api/incidents", methods=["GET"])
+@login_required
+def api_incidents() -> Response:
+    """Correlated incidents (newest first). Filter: ?status=open|acknowledged|closed."""
+    status = request.args.get("status") or None
+    if status and status not in ("open", "acknowledged", "closed"):
+        return jsonify({"error": "invalid status filter"}), 400
+    limit = min(request.args.get("limit", 50, type=int) or 50, 200)
+    incidents = get_incidents(limit=limit, status=status)
+    # mitre_techniques / entities are stored as JSON strings; decode for clients.
+    for incident in incidents:
+        for key in ("mitre_techniques", "entities"):
+            try:
+                incident[key] = json.loads(incident.get(key) or "[]")
+            except (json.JSONDecodeError, TypeError):
+                incident[key] = []
+    return jsonify({"incidents": incidents, "count": len(incidents)})
+
+
+# --- Operational endpoints (no session: probes and scrapers can't do TOTP) ---
+
+
+@bp.route("/healthz", methods=["GET"])
+def healthz() -> Response:
+    """Liveness probe: the process is serving requests."""
+    return jsonify({"status": "ok"})
+
+
+@bp.route("/readyz", methods=["GET"])
+def readyz() -> Response:
+    """Readiness probe: the audit database is reachable and readable."""
+    if database_is_readable():
+        return jsonify({"status": "ready"})
+    return jsonify({"status": "unavailable", "reason": "audit database unreadable"}), 503
+
+
+@bp.route("/metrics", methods=["GET"])
+def metrics() -> Response:
+    """Prometheus text exposition of aggregate counters.
+
+    Only aggregate counts are exposed (no event payloads, usernames, or IPs),
+    so this endpoint is safe to scrape without TOTP authentication. Restrict
+    at the reverse proxy if your threat model requires it.
+    """
+    lines = [
+        "# HELP ids_up Whether the dashboard process is up.",
+        "# TYPE ids_up gauge",
+        "ids_up 1",
+        "# HELP ids_ready Whether the audit database is readable.",
+        "# TYPE ids_ready gauge",
+        f"ids_ready {1 if database_is_readable() else 0}",
+        "# HELP ids_audit_events_total Audit events by level.",
+        "# TYPE ids_audit_events_total counter",
+    ]
+    for level, count in sorted(get_event_counts_by_level().items()):
+        lines.append(f'ids_audit_events_total{{level="{level}"}} {count}')
+    lines += [
+        "# HELP ids_fim_events_total File integrity events recorded.",
+        "# TYPE ids_fim_events_total counter",
+        f"ids_fim_events_total {get_fim_events_count()}",
+        "# HELP ids_network_events_total Network detection events recorded.",
+        "# TYPE ids_network_events_total counter",
+        f"ids_network_events_total {get_network_events_count()}",
+        "# HELP ids_active_users Active enrolled users.",
+        "# TYPE ids_active_users gauge",
+        f"ids_active_users {get_active_users_count()}",
+        "# HELP ids_open_incidents Correlated incidents in open status.",
+        "# TYPE ids_open_incidents gauge",
+        f"ids_open_incidents {get_open_incidents_count()}",
+    ]
+    return current_app.response_class(
+        "\n".join(lines) + "\n", mimetype="text/plain; version=0.0.4"
     )

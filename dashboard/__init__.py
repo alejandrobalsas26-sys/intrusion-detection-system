@@ -35,6 +35,12 @@ def create_app():
     """App Factory: Initializes and configures the Flask application."""
     app = Flask(__name__)
 
+    # Web workers must not serve the auth module's sleep-based backoff: a
+    # sleeping handler is a thread-exhaustion DoS vector. Default to the
+    # non-blocking reject mode here; an explicit MFA_BACKOFF_MODE env var
+    # (e.g. for the CLI's legacy behavior) always wins.
+    os.environ.setdefault("MFA_BACKOFF_MODE", "reject")
+
     app.secret_key = os.getenv("FLASK_SECRET_KEY")
     if not app.secret_key:
         raise RuntimeError(
@@ -54,6 +60,11 @@ def create_app():
 
     # --- Security Extensions ---
     csrf.init_app(app)
+
+    # HTTP-layer login rate limiting (per-app instance; see dashboard/security.py)
+    from dashboard.security import LoginRateLimiter
+
+    app.config["LOGIN_RATE_LIMITER"] = LoginRateLimiter()
 
     # Security headers: CSP, X-Frame-Options, X-Content-Type-Options, Referrer Policy.
     Talisman(

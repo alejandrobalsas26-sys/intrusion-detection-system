@@ -5,6 +5,7 @@ from scapy.all import sniff
 from scapy.packet import Packet
 
 from alerts.email_alert import send_security_alert
+from detection.dedup import EventDeduplicator
 from logs.logger import get_logger
 
 from .detectors.arp_detector import ArpDetector
@@ -53,6 +54,11 @@ def start_sensor() -> threading.Thread | None:
         SynDetector(threshold=syn_threshold, window_seconds=syn_window),
     ]
 
+    # Optional duplicate suppression across detector re-triggers. Disabled by
+    # default (window=0) to preserve legacy alert-per-event behavior.
+    dedup_window = int(os.getenv("EVENT_DEDUP_WINDOW_SECONDS", "0"))
+    deduplicator = EventDeduplicator(window_seconds=dedup_window) if dedup_window > 0 else None
+
     def _dispatch_packet(pkt: Packet) -> None:
         """Internal callback for scapy sniff."""
         for detector in detectors:
@@ -61,6 +67,20 @@ def start_sensor() -> threading.Thread | None:
 
                 # GUARDIA: Solo procesamos si el detector encontró algo
                 if event:
+                    if deduplicator is not None:
+                        entity = event.context.get("source_ip") or event.context.get(
+                            "ip_address"
+                        )
+                        fp = EventDeduplicator.fingerprint(
+                            event.detector_name, entity, event.level
+                        )
+                        if deduplicator.is_duplicate(fp):
+                            logger.info(
+                                f"Suppressed duplicate {event.detector_name} event "
+                                f"for {entity} (dedup window {dedup_window}s)."
+                            )
+                            continue
+
                     # A. Dispatch to L1 (Alerts)
                     send_security_alert(
                         event_level=event.level,

@@ -4,6 +4,7 @@ import smtplib
 from email.message import EmailMessage
 from pathlib import Path
 
+from detection.dedup import EventDeduplicator
 from logs import get_logger
 
 # Constantes de configuración del módulo
@@ -11,6 +12,21 @@ MAX_ATTACHMENT_SIZE_BYTES = 15 * 1024 * 1024  # 15 MB conservador para pre-Base6
 
 # Inyectar dependencia del logger a nivel de módulo (Lectura A)
 logger = get_logger("alerts")
+
+# Throttle de alertas duplicadas (opt-in). Con ALERT_DEDUP_WINDOW_SECONDS > 0,
+# una alerta idéntica (nivel + módulo + mensaje) dentro de la ventana se
+# suprime para evitar inundar el buzón / el rate limit del SMTP. Desactivado
+# por defecto para preservar el comportamiento histórico alerta-por-evento.
+_alert_throttle = EventDeduplicator(window_seconds=0)
+
+
+def _is_throttled(event_level: str, module_source: str, alert_message: str) -> bool:
+    window = int(os.getenv("ALERT_DEDUP_WINDOW_SECONDS", "0"))
+    if window <= 0:
+        return False
+    _alert_throttle.window_seconds = window
+    fingerprint = EventDeduplicator.fingerprint(module_source, alert_message, event_level)
+    return _alert_throttle.is_duplicate(fingerprint)
 
 
 def send_security_alert(
@@ -40,6 +56,15 @@ def send_security_alert(
     # Generar subject por defecto si no se provee
     if not subject:
         subject = f"[{event_level.upper()}] IDS Alert - {module_source}"
+
+    # Supresión de duplicados (opt-in vía ALERT_DEDUP_WINDOW_SECONDS)
+    if _is_throttled(event_level, module_source, alert_message):
+        logger.info(
+            "Duplicate alert suppressed within dedup window: %s / %s",
+            module_source,
+            subject,
+        )
+        return False
 
     sender_email = os.getenv("EMAIL_SENDER")
     sender_password = os.getenv("EMAIL_PASSWORD")

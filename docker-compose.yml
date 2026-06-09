@@ -1,0 +1,56 @@
+# Antigravity-IDS — dashboard + correlation engine.
+# The network sensor is intentionally NOT containerized here: it needs
+# CAP_NET_RAW + host networking and explicit consent; run it on the host
+# (see docs/DEPLOYMENT.md).
+services:
+  dashboard:
+    build: .
+    ports:
+      - "127.0.0.1:8000:8000"
+    env_file: .env
+    environment:
+      DB_PATH: /data/ids_database.sqlite3
+      FAILSAFE_LOG_PATH: /data/failsafe.log
+      FLASK_ENV: production
+    volumes:
+      - ids-data:/data
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+
+  correlator:
+    build: .
+    command: ["python", "-m", "detection", "--interval", "60", "--lookback", "3600"]
+    env_file: .env
+    environment:
+      DB_PATH: /data/ids_database.sqlite3
+      FAILSAFE_LOG_PATH: /data/failsafe.log
+    volumes:
+      - ids-data:/data
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+
+  # Nightly retention sweep (90 days by default; RETENTION_DAYS overrides).
+  retention:
+    build: .
+    command: >
+      sh -c "while true; do
+        python -m logs purge --vacuum;
+        sleep 86400;
+      done"
+    env_file: .env
+    environment:
+      DB_PATH: /data/ids_database.sqlite3
+      FAILSAFE_LOG_PATH: /data/failsafe.log
+    volumes:
+      - ids-data:/data
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  ids-data:

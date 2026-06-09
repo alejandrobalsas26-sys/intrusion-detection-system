@@ -44,6 +44,48 @@ BACKOFF_WINDOW = int(os.getenv("MFA_BACKOFF_WINDOW_SECONDS", "300"))
 BACKOFF_ALERT_THRESHOLD = int(os.getenv("MFA_BACKOFF_ALERT_THRESHOLD", "5"))
 
 
+def _backoff_mode() -> str:
+    """Backoff strategy, read at call time so web/CLI contexts can differ.
+
+    'sleep'  (default) — legacy behavior: serialize the caller with time.sleep.
+    'reject' — non-blocking: immediately return a RATE_LIMITED AuthEvent.
+               Recommended for web workers, where sleeping in the request
+               handler enables thread-exhaustion DoS and parallel requests
+               bypass the serialized delay anyway.
+    """
+    return os.getenv("MFA_BACKOFF_MODE", "sleep").strip().lower()
+
+
+def _enforce_backoff(username: str, user_id: int) -> tuple[int, int, "AuthEvent | None"]:
+    """Applies the configured backoff strategy for a user with recent failures.
+
+    Returns (backoff_seconds, failure_count, rejection_event). When
+    rejection_event is not None the caller must return it without verifying.
+    """
+    backoff_seconds, failure_count = _calculate_backoff_delay(user_id)
+    if backoff_seconds <= 0:
+        return backoff_seconds, failure_count, None
+
+    if _backoff_mode() == "reject":
+        return (
+            backoff_seconds,
+            failure_count,
+            _dispatch_event(
+                AuthEvent(
+                    level="WARNING",
+                    event_name="RATE_LIMITED",
+                    message=f"Authentication rate limited for user '{username}'.",
+                    context=_build_event_context(
+                        "RATE_LIMITED", backoff_seconds, failure_count
+                    ),
+                )
+            ),
+        )
+
+    time.sleep(backoff_seconds)
+    return backoff_seconds, failure_count, None
+
+
 def _bootstrap_auth_db():
     """Ensures the database schema exists."""
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
@@ -211,9 +253,9 @@ def verify_token(username: str, token: str) -> AuthEvent:
                 )
             )
 
-        backoff_seconds, failure_count = _calculate_backoff_delay(user_id)
-        if backoff_seconds > 0:
-            time.sleep(backoff_seconds)
+        backoff_seconds, failure_count, rejection = _enforce_backoff(username, user_id)
+        if rejection is not None:
+            return rejection
 
         fingerprint = _token_fingerprint(user_id, token)
         cursor.execute(
@@ -335,9 +377,9 @@ def use_recovery_code(username: str, code: str) -> AuthEvent:
                 )
             )
 
-        backoff_seconds, failure_count = _calculate_backoff_delay(user_id)
-        if backoff_seconds > 0:
-            time.sleep(backoff_seconds)
+        backoff_seconds, failure_count, rejection = _enforce_backoff(username, user_id)
+        if rejection is not None:
+            return rejection
 
         fingerprint = _recovery_fingerprint(user_id, code)
         cursor.execute(
@@ -456,6 +498,47 @@ def revoke_user(username: str) -> tuple[bool, str]:
             )
         )
         return True, "success"
+
+
+def get_user_role(username: str) -> str | None:
+    """Returns the role of an active user, or None if unknown/revoked.
+
+    RBAC read path over the existing users.role column ('analyst' default,
+    'admin' grants administrative views in the dashboard).
+    """
+    _bootstrap_auth_db()
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT role FROM users WHERE username = ? AND is_active = 1", (username,)
+        )
+        row = cursor.fetchone()
+        return row[0] if row else None
+
+
+def set_user_role(username: str, role: str) -> bool:
+    """Assigns a role to an existing user. Returns False if user not found."""
+    valid_roles = {"analyst", "admin", "viewer"}
+    if role not in valid_roles:
+        raise ValueError(f"Invalid role '{role}'. Valid roles: {sorted(valid_roles)}")
+
+    _bootstrap_auth_db()
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute("UPDATE users SET role = ? WHERE username = ?", (role, username))
+        conn.commit()
+        if cursor.rowcount == 0:
+            return False
+
+    _dispatch_event(
+        AuthEvent(
+            level="INFO",
+            event_name="ROLE_CHANGED",
+            message=f"Role for user '{username}' set to '{role}'.",
+            context=_build_event_context("ROLE_CHANGED", extra={"new_role": role}),
+        )
+    )
+    return True
 
 
 def list_users() -> list[dict]:

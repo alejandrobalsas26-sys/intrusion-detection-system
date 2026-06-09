@@ -1,0 +1,14 @@
+.git
+.github
+.env
+.pytest_cache
+.ruff_cache
+__pycache__
+**/__pycache__
+*.pyc
+tests/
+tmpclean_test/
+logs/ids_database.sqlite3
+logs/failsafe.log
+docs/
+README.md

@@ -3,7 +3,13 @@ import sys
 
 import qrcode
 
-from auth.core import UserAlreadyExistsError, enroll_user, list_users, revoke_user
+from auth.core import (
+    UserAlreadyExistsError,
+    enroll_user,
+    list_users,
+    revoke_user,
+    set_user_role,
+)
 
 
 def handle_enroll(args):
@@ -66,6 +72,18 @@ def handle_list(args):
     print("\n")
 
 
+def handle_set_role(args):
+    try:
+        if set_user_role(args.username, args.role):
+            print(f"\n[+] Role for '{args.username}' set to '{args.role}'.\n")
+        else:
+            print(f"[!] User '{args.username}' not found.", file=sys.stderr)
+            sys.exit(1)
+    except ValueError as e:
+        print(f"[!] {e}", file=sys.stderr)
+        sys.exit(1)
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="auth-cli", description="Antigravity-IDS Authentication Management CLI"
@@ -84,6 +102,11 @@ def main():
     # List subcommand
     subparsers.add_parser("list", help="List enrolled users")
 
+    # Set-role subcommand (RBAC)
+    role_parser = subparsers.add_parser("set-role", help="Assign a role to a user")
+    role_parser.add_argument("username", help="Target username")
+    role_parser.add_argument("role", help="Role to assign: analyst, admin, or viewer")
+
     args = parser.parse_args()
 
     if args.command == "enroll":
@@ -92,6 +115,8 @@ def main():
         handle_revoke(args)
     elif args.command == "list":
         handle_list(args)
+    elif args.command == "set-role":
+        handle_set_role(args)
 
 
 if __name__ == "__main__":

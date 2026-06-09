@@ -13,3 +13,7 @@ CREATE TABLE IF NOT EXISTS fim_events (
     severity TEXT NOT NULL,
     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Additive index: timeline queries and retention purges scan by time.
+CREATE INDEX IF NOT EXISTS idx_fim_events_time ON fim_events(timestamp);
+

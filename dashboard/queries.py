@@ -96,6 +96,77 @@ def get_network_events_count() -> int:
         return 0
 
 
+def get_incidents(limit: int = 50, status: str | None = None) -> list[dict]:
+    """Fetch correlated incidents (newest first), optionally filtered by status."""
+    try:
+        with _get_connection() as conn:
+            cursor = conn.cursor()
+            if status:
+                cursor.execute(
+                    """
+                    SELECT id, created_at, rule_name, title, severity, risk_score,
+                           mitre_techniques, entities, event_count,
+                           first_event_ts, last_event_ts, summary, status
+                    FROM incidents
+                    WHERE status = ?
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                """,
+                    (status, limit),
+                )
+            else:
+                cursor.execute(
+                    """
+                    SELECT id, created_at, rule_name, title, severity, risk_score,
+                           mitre_techniques, entities, event_count,
+                           first_event_ts, last_event_ts, summary, status
+                    FROM incidents
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                """,
+                    (limit,),
+                )
+            return [dict(row) for row in cursor.fetchall()]
+    except sqlite3.Error as e:
+        # Table may not exist until the first correlation sweep runs.
+        logger.error("Query failure: get_incidents - %s", e)
+        return []
+
+
+def get_open_incidents_count() -> int:
+    """Count of incidents still in 'open' status."""
+    try:
+        with _get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM incidents WHERE status = 'open'")
+            return cursor.fetchone()[0]
+    except sqlite3.Error as e:
+        logger.error("Query failure: get_open_incidents_count - %s", e)
+        return 0
+
+
+def get_event_counts_by_level() -> dict[str, int]:
+    """Audit event totals grouped by level, for the metrics endpoint."""
+    try:
+        with _get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT level, COUNT(*) FROM audit_events GROUP BY level")
+            return {row[0]: row[1] for row in cursor.fetchall()}
+    except sqlite3.Error as e:
+        logger.error("Query failure: get_event_counts_by_level - %s", e)
+        return {}
+
+
+def database_is_readable() -> bool:
+    """Readiness probe: the audit DB exists and accepts a read."""
+    try:
+        with _get_connection() as conn:
+            conn.execute("SELECT 1 FROM audit_events LIMIT 1")
+        return True
+    except sqlite3.Error:
+        return False
+
+
 def get_audit_events_since(last_id: int, limit: int = 20) -> list[dict]:
     """Fetch audit events with id > last_id for SSE incremental polling."""
     try:

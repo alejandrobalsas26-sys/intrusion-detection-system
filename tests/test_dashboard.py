@@ -100,12 +100,6 @@ class DashboardRoutesTestCase(unittest.TestCase):
         response = client.post("/login", data={"username": "alice", "totp_code": "123456"})
         self.assertEqual(response.status_code, 400)
 
-    @unittest.skip(
-        "Flask-Limiter integration was removed per the architectural "
-        "rate-limiting decision (commit 6c61030); app-layer rate limiting "
-        "no longer exists. Test preserved for when rate limiting is "
-        "reintroduced at the chosen layer."
-    )
     def test_login_rate_limit_blocks_after_threshold(self):
         """The 6th /login POST inside the window is rejected with 429."""
         app = create_app()
