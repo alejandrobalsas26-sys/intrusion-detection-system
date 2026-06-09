@@ -1,0 +1,145 @@
+{% extends "base.html" %}
+
+{% block title %}IDS Console - Dashboard{% endblock %}
+
+{% block content %}
+    {% set level_counts = {} %}
+    {% for event in audit_events %}
+        {% if level_counts.update({event.level: level_counts.get(event.level, 0) + 1}) %}{% endif %}
+    {% endfor %}
+
+    <div class="mb-8 flex flex-col gap-1">
+        <h2 class="text-2xl font-semibold tracking-tight text-white">Security Overview</h2>
+        <p class="text-sm text-slate-400">Real-time posture across audit and file-integrity telemetry</p>
+    </div>
+
+    <div class="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4">
+        <div class="rounded-2xl border border-slate-800 bg-slate-900/60 p-6 ring-1 ring-white/5 transition-colors duration-200 hover:border-cyan-500/30">
+            <p class="text-sm font-medium text-slate-400">Active Users</p>
+            <p class="mt-2 text-3xl font-semibold text-white">{{ active_users_count }}</p>
+            <p class="mt-1 text-xs text-slate-500">Accounts with is_active = 1</p>
+        </div>
+        <div class="rounded-2xl border border-slate-800 bg-slate-900/60 p-6 ring-1 ring-white/5 transition-colors duration-200 hover:border-amber-500/30">
+            <p class="text-sm font-medium text-slate-400">FIM Events</p>
+            <p class="mt-2 text-3xl font-semibold text-white">{{ fim_events_count }}</p>
+            <p class="mt-1 text-xs text-slate-500">File integrity alerts recorded</p>
+        </div>
+        <div class="rounded-2xl border border-slate-800 bg-slate-900/60 p-6 ring-1 ring-white/5 transition-colors duration-200 hover:border-cyan-500/30">
+            <p class="text-sm font-medium text-slate-400">Recent Audit Events</p>
+            <p class="mt-2 text-3xl font-semibold text-white">{{ audit_events|length }}</p>
+            <p class="mt-1 text-xs text-slate-500">Loaded in the current view</p>
+        </div>
+        <div class="rounded-2xl border border-slate-800 bg-slate-900/60 p-6 ring-1 ring-white/5 transition-colors duration-200 hover:border-red-500/30">
+            <p class="text-sm font-medium text-slate-400">Network Alerts</p>
+            <p class="mt-2 text-3xl font-semibold text-white">{{ network_events_count }}</p>
+            <p class="mt-1 text-xs text-slate-500">ARP / SYN detection events</p>
+        </div>
+    </div>
+
+    <div class="mt-8 rounded-2xl border border-slate-800 bg-slate-900/60 p-6 ring-1 ring-white/5">
+        <div class="mb-2 flex items-center justify-between">
+            <h3 class="text-base font-semibold text-white">Audit Events by Severity</h3>
+            <span class="text-xs text-slate-500">Distribution of the {{ audit_events|length }} most recent events</span>
+        </div>
+        {% if audit_events %}
+            <div class="relative mt-4 h-72">
+                <canvas id="events-by-level-chart"></canvas>
+            </div>
+        {% else %}
+            <p class="mt-4 text-sm text-slate-400">No audit events to visualize yet.</p>
+        {% endif %}
+    </div>
+
+    <div class="mt-8 overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/60 ring-1 ring-white/5">
+        <div class="border-b border-slate-800 px-6 py-4">
+            <h3 class="text-base font-semibold text-white">Recent Audit Events
+                <span id="live-badge" class="ml-2 hidden inline-flex items-center gap-1 rounded-full bg-emerald-500/15 px-2 py-0.5 text-xs font-medium text-emerald-400 ring-1 ring-emerald-500/30">
+                    <span class="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                    Live
+                </span>
+            </h3>
+        </div>
+        {% if audit_events %}
+            <div class="overflow-x-auto">
+                <table class="min-w-full divide-y divide-slate-800 text-sm">
+                    <thead>
+                        <tr class="text-left text-xs font-semibold uppercase tracking-wider text-slate-400">
+                            <th scope="col" class="px-6 py-3">Timestamp</th>
+                            <th scope="col" class="px-6 py-3">Level</th>
+                            <th scope="col" class="px-6 py-3">Module</th>
+                            <th scope="col" class="px-6 py-3">Message</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-slate-800/70">
+                        {% for event in audit_events %}
+                            <tr class="transition-colors duration-150 hover:bg-slate-800/40">
+                                <td class="whitespace-nowrap px-6 py-3 font-mono text-xs text-slate-400">{{ event.timestamp }}</td>
+                                <td class="whitespace-nowrap px-6 py-3">
+                                    <span class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium
+                                        {% if event.level == 'CRITICAL' %}bg-red-500/15 text-red-300 ring-1 ring-red-500/30
+                                        {% elif event.level == 'ERROR' %}bg-orange-500/15 text-orange-300 ring-1 ring-orange-500/30
+                                        {% elif event.level == 'WARNING' %}bg-amber-500/15 text-amber-300 ring-1 ring-amber-500/30
+                                        {% elif event.level == 'INFO' %}bg-cyan-500/15 text-cyan-300 ring-1 ring-cyan-500/30
+                                        {% else %}bg-slate-500/15 text-slate-300 ring-1 ring-slate-500/30{% endif %}">
+                                        {{ event.level }}
+                                    </span>
+                                </td>
+                                <td class="whitespace-nowrap px-6 py-3 text-slate-300">{{ event.module_source }}</td>
+                                <td class="px-6 py-3 text-slate-300">{{ event.message }}</td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        {% else %}
+            <p class="px-6 py-8 text-center text-sm text-slate-400">No audit events recorded yet.</p>
+        {% endif %}
+    </div>
+
+    <div class="mt-8 overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/60 ring-1 ring-white/5">
+        <div class="border-b border-slate-800 px-6 py-4">
+            <h3 class="text-base font-semibold text-white">Network Detection Events</h3>
+        </div>
+        {% if network_events %}
+            <div class="overflow-x-auto">
+                <table class="min-w-full divide-y divide-slate-800 text-sm">
+                    <thead>
+                        <tr class="text-left text-xs font-semibold uppercase tracking-wider text-slate-400">
+                            <th scope="col" class="px-6 py-3">Timestamp</th>
+                            <th scope="col" class="px-6 py-3">Level</th>
+                            <th scope="col" class="px-6 py-3">Detector</th>
+                            <th scope="col" class="px-6 py-3">Message</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-slate-800/70">
+                        {% for event in network_events %}
+                            <tr class="transition-colors duration-150 hover:bg-slate-800/40">
+                                <td class="whitespace-nowrap px-6 py-3 font-mono text-xs text-slate-400">{{ event.timestamp }}</td>
+                                <td class="whitespace-nowrap px-6 py-3">
+                                    <span class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium
+                                        {% if event.level == 'CRITICAL' %}bg-red-500/15 text-red-300 ring-1 ring-red-500/30
+                                        {% elif event.level == 'ERROR' %}bg-orange-500/15 text-orange-300 ring-1 ring-orange-500/30
+                                        {% elif event.level == 'WARNING' %}bg-amber-500/15 text-amber-300 ring-1 ring-amber-500/30
+                                        {% elif event.level == 'INFO' %}bg-cyan-500/15 text-cyan-300 ring-1 ring-cyan-500/30
+                                        {% else %}bg-slate-500/15 text-slate-300 ring-1 ring-slate-500/30{% endif %}">
+                                        {{ event.level }}
+                                    </span>
+                                </td>
+                                <td class="whitespace-nowrap px-6 py-3 text-slate-300">{{ event.module_source }}</td>
+                                <td class="px-6 py-3 text-slate-300">{{ event.message }}</td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        {% else %}
+            <p class="px-6 py-8 text-center text-sm text-slate-400">No events recorded yet.</p>
+        {% endif %}
+    </div>
+
+    <script type="application/json" id="audit-level-data">{{ level_counts|tojson }}</script>
+{% endblock %}
+
+{% block scripts %}
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.6/dist/chart.umd.min.js" defer></script>
+{% endblock %}

@@ -1,0 +1,28 @@
+# Virtual Environments
+venv/
+.venv/
+
+# IDEs and OS
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Logs and Databases
+# Logs and Databases
+logs/*
+!logs/*.py
+!logs/*.sql
+!logs/__init__.py
+!logs/*.md
+
+# Generated runtime files
+logs/ids_database.sqlite3
+logs/failsafe.log
+fim/config.json
+
+# Secrets and Credentials (NEVER UPLOAD)
+.env
+
+**/__pycache__/
+**/*.pyc
+tmpclean_test/
