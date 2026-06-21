@@ -47,7 +47,11 @@ and a common alerting channel. Each layer can run standalone (`python -m <pkg>`)
 `SQLiteAuditHandler` (a `logging.Handler`) persists every record to
 `audit_events` with parameterized SQL. If SQLite is unavailable it degrades to
 an append-only text failsafe, then to stderr. `logs/maintenance.py` provides
-retention purges, `PRAGMA integrity_check`, and VACUUM (`python -m logs`).
+retention purges, `PRAGMA integrity_check`/`quick_check`, VACUUM, and WAL
+checkpointing (`python -m logs`). `logs/integrity.py` adds optional
+tamper-evident sealing: a hash chain over `audit_events` (table
+`audit_checkpoints`) that detects post-hoc modification or deletion, kept off
+the hot logging path.
 
 ### `alerts/` — L1 notification channel
 `send_security_alert()` sends SMTP/STARTTLS mail with MIME attachments
@@ -82,7 +86,16 @@ events to the DB, audit log, and email.
   contextual amplifiers.
 * `dedup.py` — fingerprint-based duplicate suppression (sliding window).
 * `correlation.py` — rule-driven sliding-window correlation over
-  `audit_events`/`fim_events`; emits incidents into the `incidents` table.
+  `audit_events`/`fim_events`; emits incidents into the `incidents` table. Rules:
+  brute force, password spray, successful-login-after-failures, replay, recon→auth,
+  network→FIM, and IOC watchlist matches.
+* `intel.py` — optional local threat-intelligence (IOC) matching: IP/CIDR and
+  domain watchlists loaded from files (`IOC_*_LIST_PATH`), no cloud/API/paid feeds.
+* `phishing.py` — deterministic, explainable phishing/scam URL analysis
+  (homoglyph/punycode, typosquatting, brand impersonation, abused TLDs, scam
+  keywords). Pure stdlib; CLI `python -m detection.phishing <url>`.
+* `playbook.py` — per-rule analyst guidance: tactic, confidence, and concrete
+  remediation steps, applied as read-time enrichment on incidents.
 * `python -m detection` — one-shot or interval correlation sweeps.
 
 ### `dashboard/` — L8 read-only SOC console
@@ -107,10 +120,10 @@ All schema files are idempotent (`IF NOT EXISTS`) and additive-only.
 | Table | Owner | Purpose |
 |-------|-------|---------|
 | `audit_events` | logs | every log record (epoch timestamp, level, module, message, JSON context) |
+| `audit_checkpoints` | logs | tamper-evident hash-chain seals over `audit_events` (see `logs/integrity.py`) |
 | `users` | auth | identities; `role` (RBAC), `is_active` (soft delete) |
 | `recovery_codes` | auth | scrypt-hashed one-time codes |
 | `auth_attempts` | auth | success/failure trail + replay fingerprints |
-| `token_blacklist` | auth | reserved for future session/token revocation |
 | `file_baselines` | fim | SHA-256 baselines |
 | `fim_events` | fim | integrity violations |
 | `incidents` | detection | correlated multi-event incidents (rule, score, MITRE, status) |

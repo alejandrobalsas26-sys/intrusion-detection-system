@@ -13,6 +13,7 @@ from typing import Any
 
 from ai.client import LocalLLMClient
 from detection.mitre import EVENT_TECHNIQUE_MAP, Technique
+from detection.playbook import playbook_for
 
 _SYSTEM_PROMPT = (
     "You are a SOC analyst assistant for an intrusion detection system. "
@@ -67,6 +68,10 @@ def _deterministic_incident_summary(incident: dict[str, Any]) -> str:
         parts.append(f"Mapped ATT&CK techniques: {', '.join(_technique_names(techniques))}.")
     if incident.get("summary"):
         parts.append(str(incident["summary"]))
+    # Make the offline summary actionable with the playbook's first step.
+    pb = playbook_for(incident.get("rule_name", ""))
+    if pb.remediation:
+        parts.append(f"Recommended first step: {pb.remediation[0]}")
     return " ".join(parts)
 
 

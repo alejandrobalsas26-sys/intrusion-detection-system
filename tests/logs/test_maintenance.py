@@ -10,7 +10,9 @@ from logs.maintenance import (
     database_stats,
     integrity_check,
     purge_old_events,
+    quick_check,
     vacuum,
+    wal_checkpoint,
 )
 
 REPO_ROOT = Path(__file__).parent.parent.parent
@@ -105,6 +107,18 @@ class MaintenanceTestCase(unittest.TestCase):
         self.assertEqual(stats["fim_events"], 2)
         self.assertEqual(stats["incidents"], 2)
         self.assertGreater(stats["size_bytes"], 0)
+
+    def test_quick_check_ok_on_healthy_db(self):
+        ok, findings = quick_check(db_path=self.db_path)
+        self.assertTrue(ok)
+        self.assertEqual(findings, ["ok"])
+
+    def test_wal_checkpoint_runs_and_reports(self):
+        self._seed()
+        result = wal_checkpoint(db_path=self.db_path)
+        # WAL mode is enabled by the logs schema, so the PRAGMA returns counters.
+        self.assertIsInstance(result, dict)
+        self.assertIn("checkpointed_frames", result)
 
 
 if __name__ == "__main__":

@@ -37,6 +37,25 @@ EVENT_TECHNIQUE_MAP: dict[str, tuple[Technique, ...]] = {
         Technique("T1070.004", "Indicator Removal: File Deletion", "defense-evasion"),
     ),
     "FIM_CREATED": (Technique("T1105", "Ingress Tool Transfer", "command-and-control"),),
+    # Synthetic keys: these are never produced by event normalization, so they
+    # never tag a real event. They exist so correlation *rules* can attach a
+    # precise sub-technique (via IncidentCandidate.extra_techniques) and so name
+    # lookups (e.g. the AI summarizer) resolve the human-readable label.
+    "password_spray": (
+        Technique("T1110.003", "Brute Force: Password Spraying", "credential-access"),
+    ),
+    "credential_stuffing": (
+        Technique("T1110.004", "Brute Force: Credential Stuffing", "credential-access"),
+    ),
+    "valid_accounts_suspected": (
+        Technique("T1078", "Valid Accounts", "defense-evasion"),
+    ),
+}
+
+# Flat technique_id -> Technique registry, derived once from the event map, for
+# callers that look up a technique by its identifier (rules, playbooks).
+TECHNIQUE_REGISTRY: dict[str, "Technique"] = {
+    t.technique_id: t for techniques in EVENT_TECHNIQUE_MAP.values() for t in techniques
 }
 
 
@@ -48,3 +67,8 @@ def techniques_for(event_name: str) -> tuple[Technique, ...]:
 def technique_ids_for(event_name: str) -> list[str]:
     """Returns just the technique ID strings (e.g. for JSON serialization)."""
     return [t.technique_id for t in techniques_for(event_name)]
+
+
+def technique_by_id(technique_id: str) -> Technique | None:
+    """Looks up a known Technique by its ATT&CK identifier (or None)."""
+    return TECHNIQUE_REGISTRY.get(technique_id)

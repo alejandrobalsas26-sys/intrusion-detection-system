@@ -64,6 +64,8 @@ class OperationalEndpointsTestCase(unittest.TestCase):
         response = self.client.get("/readyz")
         self.assertEqual(response.status_code, 503)
 
+    @patch("dashboard.routes.get_latest_event_timestamp", return_value=1750000000.0)
+    @patch("dashboard.routes.get_database_size_bytes", return_value=4096)
     @patch("dashboard.routes.get_open_incidents_count", return_value=2)
     @patch("dashboard.routes.get_active_users_count", return_value=3)
     @patch("dashboard.routes.get_network_events_count", return_value=4)
@@ -81,6 +83,8 @@ class OperationalEndpointsTestCase(unittest.TestCase):
         self.assertIn('ids_audit_events_total{level="WARNING"} 7', body)
         self.assertIn("ids_fim_events_total 5", body)
         self.assertIn("ids_open_incidents 2", body)
+        self.assertIn("ids_database_size_bytes 4096", body)
+        self.assertIn("ids_last_event_timestamp_seconds 1750000000.0", body)
         self.assertTrue(response.mimetype.startswith("text/plain"))
 
 
@@ -124,6 +128,32 @@ class IncidentsApiTestCase(unittest.TestCase):
             sess["user_id"] = "alice"
         response = self.client.get("/api/incidents?status=bogus")
         self.assertEqual(response.status_code, 400)
+
+    @patch("dashboard.routes.get_incidents")
+    def test_incidents_are_enriched_with_remediation(self, mock_get):
+        mock_get.return_value = [
+            {
+                "id": 1,
+                "rule_name": "auth_success_after_failures",
+                "title": "Successful login after 5 failures for user 'victim'",
+                "severity": "WARNING",
+                "risk_score": 55,
+                "mitre_techniques": '["T1078"]',
+                "entities": '["victim"]',
+                "event_count": 6,
+                "status": "open",
+            }
+        ]
+        with self.client.session_transaction() as sess:
+            sess["user_id"] = "alice"
+        response = self.client.get("/api/incidents")
+        self.assertEqual(response.status_code, 200)
+        incident = response.get_json()["incidents"][0]
+        # Read-time enrichment must add analyst-facing guidance.
+        self.assertIn("remediation", incident)
+        self.assertTrue(incident["remediation"])
+        self.assertIn("confidence", incident)
+        self.assertIn("tactic", incident)
 
 
 class RbacDecoratorTestCase(unittest.TestCase):

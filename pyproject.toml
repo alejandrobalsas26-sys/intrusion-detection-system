@@ -28,7 +28,9 @@ dev = [
     "ruff>=0.9",
 ]
 prod = [
-    "gunicorn>=23.0",
+    # Waitress is the supported production server: pure-Python and
+    # Windows-compatible (gunicorn is POSIX-only and cannot run on Windows).
+    "waitress>=3.0",
 ]
 
 # Flat-layout project with several top-level packages; declare them explicitly

@@ -17,8 +17,11 @@ from detection.mitre import technique_ids_for
 from detection.scoring import risk_score
 
 # Extracts the username from auth module messages, e.g.
-# "Authentication failed for user 'alice'."
-_USER_RE = re.compile(r"user '([^']+)'")
+# "Authentication failed for user 'alice'." Case-insensitive because the auth
+# core capitalizes the word in success messages ("User 'alice' authenticated
+# successfully."); without IGNORECASE those AUTH_SUCCESS events would normalize
+# with no entity, breaking any rule that correlates a success back to a user.
+_USER_RE = re.compile(r"user '([^']+)'", re.IGNORECASE)
 # Extracts detector name from network sensor audit messages, e.g.
 # "DetectionEvent: CRITICAL from syn_scan - SYN scan detected from 10.0.0.9: ..."
 _DETECTOR_RE = re.compile(r"DetectionEvent: \w+ from (\w+)")

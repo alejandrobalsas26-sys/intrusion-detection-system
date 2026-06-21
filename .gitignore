@@ -26,3 +26,5 @@ fim/config.json
 **/__pycache__/
 **/*.pyc
 tmpclean_test/
+
+*.egg-info/

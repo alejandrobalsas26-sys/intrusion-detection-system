@@ -167,6 +167,32 @@ def database_is_readable() -> bool:
         return False
 
 
+def get_database_size_bytes() -> int:
+    """On-disk size of the audit database (main file + WAL), for capacity alerts."""
+    total = 0
+    for suffix in ("", "-wal"):
+        try:
+            total += os.path.getsize(DB_PATH + suffix)
+        except OSError:
+            pass
+    return total
+
+
+def get_latest_event_timestamp() -> float:
+    """Epoch timestamp of the most recent audit event (0.0 if none/unreadable).
+
+    A stalling value is the clearest 'a sensor stopped feeding the IDS' signal,
+    so it is exported as an absolute gauge for the operator to alert on.
+    """
+    try:
+        with _get_connection() as conn:
+            row = conn.execute("SELECT MAX(timestamp) FROM audit_events").fetchone()
+        return float(row[0]) if row and row[0] is not None else 0.0
+    except sqlite3.Error as e:
+        logger.error("Query failure: get_latest_event_timestamp - %s", e)
+        return 0.0
+
+
 def get_audit_events_since(last_id: int, limit: int = 20) -> list[dict]:
     """Fetch audit events with id > last_id for SSE incremental polling."""
     try:

@@ -8,27 +8,62 @@
 | `GET /readyz` | readiness — audit DB reachable and readable (503 otherwise) |
 | `GET /metrics` | Prometheus text exposition (aggregate counters only — no event payloads, usernames, or IPs) |
 
-Prometheus scrape config:
+Before serving, run `python -m dashboard --check` to validate configuration
+(secret key, Fernet key, DB path, production server availability). It exits 0
+when READY and 1 on a blocking misconfiguration — wire it into your service
+start script.
+
+Prometheus scrape config (default Waitress port is 5000; scrape through your
+reverse proxy if TLS is terminated there):
 
 ```yaml
 scrape_configs:
   - job_name: antigravity-ids
-    static_configs: [{ targets: ["127.0.0.1:8000"] }]
+    static_configs: [{ targets: ["127.0.0.1:5000"] }]
 ```
 
-Useful alerts: `ids_ready == 0` (DB unavailable), `increase(ids_audit_events_total{level="CRITICAL"}[5m]) > 0`, `ids_open_incidents > 0`.
+Exposed series include `ids_up`, `ids_ready`, `ids_audit_events_total{level}`,
+`ids_fim_events_total`, `ids_network_events_total`, `ids_active_users`,
+`ids_open_incidents`, `ids_database_size_bytes`, and
+`ids_last_event_timestamp_seconds`.
+
+Useful alerts:
+* `ids_ready == 0` — DB unavailable
+* `increase(ids_audit_events_total{level="CRITICAL"}[5m]) > 0` — critical activity
+* `ids_open_incidents > 0` — uncleared incidents
+* `time() - ids_last_event_timestamp_seconds > 3600` — telemetry stalled (a sensor likely stopped)
+* `ids_database_size_bytes` trending up unexpectedly — retention not keeping pace
 
 ## 2. Database maintenance
 
 ```bash
 python -m logs stats            # row counts + size
 python -m logs check            # PRAGMA integrity_check (exit 1 on corruption)
+python -m logs check --quick    # faster PRAGMA quick_check (routine health probe)
 python -m logs purge --days 90  # retention purge (audit, fim, auth_attempts, closed incidents)
 python -m logs purge --vacuum   # purge + reclaim disk space
+python -m logs checkpoint       # flush + truncate the WAL (hygiene after a large purge)
 ```
 
 Retention never touches identity data (users, recovery codes) or file
 baselines, and never deletes open/acknowledged incidents.
+
+## 2b. Tamper-evident audit sealing (optional)
+
+```bash
+python -m logs seal             # fold new audit events into the hash chain
+python -m logs verify-chain     # recompute the chain; exit 1 if tampering is found
+```
+
+`seal` is an out-of-band batch job (run it from the daily retention task). It
+never touches the hot logging path. `verify-chain` reports any modification,
+deletion, or insertion within a sealed range, while treating rows that aged out
+under retention as expected (not tampering). For a stronger guarantee, export
+the `anchor` hash printed by `verify-chain` to off-box/WORM storage so a forger
+who rewrites the checkpoint table cannot cover their tracks.
+
+> Coordinate sealing with retention: seal within your retention window, and
+> after a purge the aged-out segments are reported as "aged out", not failures.
 
 ## 3. Backups & disaster recovery
 
@@ -46,9 +81,20 @@ baselines, and never deletes open/acknowledged incidents.
 ## 4. Incident triage workflow
 
 1. `GET /api/incidents?status=open` (or the dashboard) — sorted newest first,
-   each with `risk_score`, `mitre_techniques`, `entities`, and a summary.
-2. Correlation sweeps run via the `correlator` service or `python -m detection`.
+   each with `risk_score`, `mitre_techniques`, `entities`, a summary, and
+   read-time enrichment: `tactic`, `confidence`, `remediation` steps, and
+   `references`. Incident rules include brute force, **password spray**,
+   **successful login after a failure burst** (possible compromise), replay,
+   recon→auth, network→FIM, and **threat-intel (IOC) matches**.
+2. Correlation sweeps run via `python -m detection` (one-shot or `--interval`).
    Sweeps are idempotent — re-running never duplicates incidents.
+   * To enable IOC matching, point `IOC_IP_LIST_PATH` / `IOC_DOMAIN_LIST_PATH`
+     at plain-text watchlists (one indicator per line; CIDR and parent-domain
+     matching supported). Off until configured.
+   * To triage a suspicious link from a phishing/smishing report, run
+     `python -m detection.phishing <url>` for an explainable, fully-local risk
+     verdict (homoglyph/punycode, typosquatting, brand impersonation, abused
+     TLDs, scam keywords). No data leaves the host.
 3. Acknowledge/close (until the UI grows controls) directly and audibly:
    ```bash
    sqlite3 $DB_PATH "UPDATE incidents SET status='acknowledged' WHERE id=<n>;"

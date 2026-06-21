@@ -16,6 +16,9 @@
 | Sensor abuse | unauthorized sniffing | explicit consent env gate + OS privilege check |
 | SSE | worker exhaustion | auth required; bounded stream lifetime; heartbeats |
 | AI layer | data exfiltration | disabled by default; local endpoint only unless operator reconfigures; scheme validation; hard failure isolation |
+| Audit log tampering | post-hoc edit/delete of forensic records | optional hash-chain sealing (`python -m logs seal` / `verify-chain`); off-box anchor for tamper-proofing |
+| Known-bad infrastructure | traffic to/from flagged IPs or domains | optional local IOC watchlists (`detection/intel.py`); no cloud/API dependency |
+| Phishing / smishing links | credential-harvesting URLs | local, explainable URL analyzer (`detection/phishing.py`); fully offline, no AI/API |
 
 ## Secret management
 
@@ -56,9 +59,15 @@ reproducible; review diffs when bumping pins.
 * FIM has a TOCTOU window between hash computations (accepted MVP debt).
 * `/metrics` is unauthenticated by design (aggregate counters only); restrict
   at the reverse proxy if your threat model requires it.
-* The in-process login rate limiter is per-worker; with multiple gunicorn
-  workers the effective limit is `limit × workers`. Front with a reverse-proxy
-  limit (e.g. nginx `limit_req`) for strict guarantees.
+* The in-process login rate limiter is per-process; if you run multiple
+  Waitress instances behind a load balancer the effective limit is
+  `limit × instances`. A single Waitress process (the default) uses threads, not
+  separate processes, so the limiter is global within it. Front with a
+  reverse-proxy limit (e.g. nginx `limit_req`) for strict multi-instance guarantees.
+* Audit sealing (`logs/integrity.py`) is tamper-*evident*, not tamper-*proof*:
+  an attacker with write access to both `audit_events` and `audit_checkpoints`
+  can rewrite a consistent chain. Export the latest `chain_hash` anchor off-box
+  to close that gap.
 
 ## Reporting
 

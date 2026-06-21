@@ -27,7 +27,9 @@ The module provides an `AuthManager` to handle:
 ## Security Analysis
 - **Identity:** Validates the human operator.
 - **Confidentiality:** Secrets (TOTP keys, recovery codes) are encrypted at rest.
-- **Integrity:** The `token_blacklist` prevents replay attacks.
+- **Integrity:** Replay attacks are prevented by a deterministic SHA-256 token
+  fingerprint logged in `auth_attempts`, with a 90-second reuse window and a
+  `UNIQUE INDEX` as the concurrency backstop (see Replay Protection below).
 
 ## Verification Policy & Rate Limiting (Branch 3B)
 

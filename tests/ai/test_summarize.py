@@ -85,6 +85,10 @@ class SummarizeFallbackTestCase(unittest.TestCase):
         self.assertEqual(result["source"], "llm")
         self.assertEqual(result["summary"], "LLM analysis of the incident.")
 
+    def test_deterministic_summary_includes_remediation(self):
+        result = summarize_incident(INCIDENT, client=LocalLLMClient(backend="none"))
+        self.assertIn("Recommended first step", result["summary"])
+
     @patch("ai.client.urllib.request.urlopen", side_effect=TimeoutError("down"))
     def test_llm_failure_falls_back_to_deterministic(self, _mock):
         client = LocalLLMClient(backend="ollama", endpoint="http://127.0.0.1:11434/v1/x")

@@ -100,6 +100,32 @@ def integrity_check(db_path: str | None = None) -> tuple[bool, list[str]]:
     return findings == ["ok"], findings
 
 
+def quick_check(db_path: str | None = None) -> tuple[bool, list[str]]:
+    """Runs PRAGMA quick_check — a faster, lighter structural check than
+    integrity_check (skips the per-row index cross-check). Suited to routine
+    health probes; use integrity_check when corruption is suspected."""
+    path = _db_path(db_path)
+    with _connect(path) as conn:
+        rows = conn.execute("PRAGMA quick_check").fetchall()
+    findings = [r[0] for r in rows]
+    return findings == ["ok"], findings
+
+
+def wal_checkpoint(db_path: str | None = None) -> dict:
+    """Flushes the WAL into the main database and truncates it.
+
+    Good hygiene after a large purge: in WAL mode the freed pages otherwise
+    linger in a growing -wal file until the next automatic checkpoint. Returns
+    the PRAGMA's (busy, wal_frames, checkpointed) counters for visibility.
+    """
+    path = _db_path(db_path)
+    with _connect(path) as conn:
+        row = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+    if not row:
+        return {}
+    return {"busy": row[0], "wal_frames": row[1], "checkpointed_frames": row[2]}
+
+
 def vacuum(db_path: str | None = None) -> None:
     """Reclaims space after purges; also defragments the WAL store."""
     path = _db_path(db_path)

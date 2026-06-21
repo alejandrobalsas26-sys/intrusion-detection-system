@@ -21,15 +21,18 @@ from auth.core import get_user_role, list_users, verify_token
 from dashboard.queries import (
     database_is_readable,
     get_active_users_count,
+    get_database_size_bytes,
     get_event_counts_by_level,
     get_fim_events_count,
     get_incidents,
+    get_latest_event_timestamp,
     get_network_events,
     get_network_events_count,
     get_open_incidents_count,
     get_recent_audit_events,
 )
 from dashboard.security import get_limiter, login_required, require_role
+from detection.playbook import enrich_incident
 
 bp = Blueprint("main", __name__)
 
@@ -178,6 +181,8 @@ def api_incidents() -> Response:
                 incident[key] = json.loads(incident.get(key) or "[]")
             except (json.JSONDecodeError, TypeError):
                 incident[key] = []
+        # Read-time analyst enrichment: tactic, confidence, remediation hints.
+        enrich_incident(incident)
     return jsonify({"incidents": incidents, "count": len(incidents)})
 
 
@@ -257,6 +262,12 @@ def metrics() -> Response:
         "# HELP ids_open_incidents Correlated incidents in open status.",
         "# TYPE ids_open_incidents gauge",
         f"ids_open_incidents {get_open_incidents_count()}",
+        "# HELP ids_database_size_bytes On-disk size of the audit database (incl. WAL).",
+        "# TYPE ids_database_size_bytes gauge",
+        f"ids_database_size_bytes {get_database_size_bytes()}",
+        "# HELP ids_last_event_timestamp_seconds Epoch time of the most recent audit event.",
+        "# TYPE ids_last_event_timestamp_seconds gauge",
+        f"ids_last_event_timestamp_seconds {get_latest_event_timestamp()}",
     ]
     return current_app.response_class(
         "\n".join(lines) + "\n", mimetype="text/plain; version=0.0.4"

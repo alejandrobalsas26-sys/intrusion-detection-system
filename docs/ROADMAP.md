@@ -75,8 +75,8 @@ CLI), network detectors, FIM, dashboard routes/queries. 48 passing.
 
 | ID | Gap | Status |
 |----|-----|--------|
-| P-1 | No incident view — analysts see raw events only | **Fixed** — `/api/incidents` + correlation engine |
-| P-2 | No Docker / deployment story | **Fixed** — Dockerfile, docker-compose, `docs/DEPLOYMENT.md` |
+| P-1 | No incident view — analysts see raw events only | **Fixed** — `/api/incidents` + correlation engine (now with read-time remediation/confidence/tactic enrichment) |
+| P-2 | No deployment story | **Fixed** — local Windows + Waitress production server, startup config diagnostics (`python -m dashboard --check`), `docs/DEPLOYMENT.md`. (Docker/CI removed by owner in favor of a strictly local Windows environment.) |
 | P-3 | No operational runbook | **Fixed** — `docs/OPERATIONS.md` |
 | P-4 | No AI-assisted triage | **Fixed (architecture)** — `ai/` local-LLM summarizer, fully optional, privacy-preserving |
 | P-5 | Dashboard search/filter/timeline | Phase 2 |
@@ -106,7 +106,26 @@ CLI), network detectors, FIM, dashboard routes/queries. 48 passing.
 4. ✅ DB operations: retention, integrity check, VACUUM, indexes.
 5. ✅ Alert throttling (opt-in duplicate suppression).
 6. ✅ AI architecture: local-LLM summarizer with graceful no-op fallback.
-7. ✅ Docker + deployment/operations/security documentation.
+7. ✅ Local Windows + Waitress deployment, operations/security documentation.
+
+### Phase 1.5 — production hardening (this iteration)
+
+1. ✅ Deployment readiness: Waitress production server (Windows-native),
+   `python -m dashboard --check` configuration diagnostics, dependency cleanup
+   (gunicorn → waitress).
+2. ✅ Detection depth: `password_spray` and `auth_success_after_failures`
+   correlation rules; case-insensitive entity extraction fix that enables
+   success-to-user correlation.
+3. ✅ Threat intelligence: optional local IOC watchlists (IP/CIDR + domain) and
+   the `ioc_match` rule (`detection/intel.py`).
+4. ✅ Phishing/scam triage: deterministic, explainable, fully-local URL analyzer
+   (`detection/phishing.py`).
+5. ✅ Alert quality: per-rule tactic/confidence/remediation playbooks
+   (`detection/playbook.py`), surfaced on `/api/incidents` and in AI summaries.
+6. ✅ Audit integrity: tamper-evident hash-chain sealing (`logs/integrity.py`,
+   `python -m logs seal` / `verify-chain`).
+7. ✅ Observability/DB: `ids_database_size_bytes` + `ids_last_event_timestamp_seconds`
+   metrics, `quick_check`, and WAL `checkpoint` maintenance.
 
 ### Phase 2 — detection depth & analyst workflow
 
