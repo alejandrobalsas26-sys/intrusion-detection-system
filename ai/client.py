@@ -53,10 +53,30 @@ class LocalLLMClient:
         if not self.is_enabled():
             return None
 
-        scheme = urlparse(self.endpoint).scheme
-        if scheme not in ("http", "https"):
-            logger.error("AI endpoint has unsupported scheme: %s", scheme)
+        parsed = urlparse(self.endpoint)
+        if parsed.scheme not in ("http", "https"):
+            logger.error("AI endpoint has unsupported scheme: %s", parsed.scheme)
             return None
+        # A missing/empty host means a malformed endpoint (e.g. "http:///path"
+        # or a file:-style URL that slipped the scheme check). Refuse rather
+        # than letting urllib resolve something unexpected. The endpoint is an
+        # operator-trusted config value, so we do not gate it further here; see
+        # docs for restricting AI_ENDPOINT to loopback in hostile networks.
+        if not parsed.hostname:
+            logger.error("AI endpoint has no host; refusing to call: %s", self.endpoint)
+            return None
+        # Optional SSRF lockdown: when AI_ALLOWED_HOSTS is set (comma-separated),
+        # only those hostnames may be contacted. Unset preserves the default of
+        # trusting the operator-configured endpoint as-is.
+        allowed = os.getenv("AI_ALLOWED_HOSTS", "").strip()
+        if allowed:
+            allow_set = {h.strip().lower() for h in allowed.split(",") if h.strip()}
+            if parsed.hostname.lower() not in allow_set:
+                logger.error(
+                    "AI endpoint host %r not in AI_ALLOWED_HOSTS; refusing to call.",
+                    parsed.hostname,
+                )
+                return None
 
         payload = json.dumps(
             {

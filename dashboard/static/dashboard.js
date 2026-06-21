@@ -113,14 +113,39 @@
                     "INFO":     "bg-cyan-500/15 text-cyan-300 ring-1 ring-cyan-500/30",
                 };
                 var colorClass = levelColors[event.level] || "bg-slate-500/15 text-slate-300 ring-1 ring-slate-500/30";
+
+                // Build the row with the DOM API and textContent. Audit messages
+                // can embed attacker-controlled data (e.g. a login username is
+                // logged verbatim in "Authentication failed for user '<x>'"), so
+                // they must never be concatenated into innerHTML. textContent
+                // assignment escapes the value, closing the stored-XSS vector
+                // that previously relied solely on the CSP as a backstop.
                 var row = document.createElement("tr");
                 row.className = "transition-colors duration-150 hover:bg-slate-800/40 animate-pulse-once";
-                row.innerHTML = [
-                    '<td class="whitespace-nowrap px-6 py-3 font-mono text-xs text-slate-400">' + (event.timestamp || "") + "</td>",
-                    '<td class="whitespace-nowrap px-6 py-3"><span class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ' + colorClass + '">' + (event.level || "") + "</span></td>",
-                    '<td class="whitespace-nowrap px-6 py-3 text-slate-300">' + (event.module_source || "") + "</td>",
-                    '<td class="px-6 py-3 text-slate-300">' + (event.message || "") + "</td>",
-                ].join("");
+
+                var tsCell = document.createElement("td");
+                tsCell.className = "whitespace-nowrap px-6 py-3 font-mono text-xs text-slate-400";
+                tsCell.textContent = event.timestamp != null ? String(event.timestamp) : "";
+
+                var levelCell = document.createElement("td");
+                levelCell.className = "whitespace-nowrap px-6 py-3";
+                var levelBadge = document.createElement("span");
+                levelBadge.className = "inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium " + colorClass;
+                levelBadge.textContent = event.level != null ? String(event.level) : "";
+                levelCell.appendChild(levelBadge);
+
+                var moduleCell = document.createElement("td");
+                moduleCell.className = "whitespace-nowrap px-6 py-3 text-slate-300";
+                moduleCell.textContent = event.module_source != null ? String(event.module_source) : "";
+
+                var messageCell = document.createElement("td");
+                messageCell.className = "px-6 py-3 text-slate-300";
+                messageCell.textContent = event.message != null ? String(event.message) : "";
+
+                row.appendChild(tsCell);
+                row.appendChild(levelCell);
+                row.appendChild(moduleCell);
+                row.appendChild(messageCell);
                 tableBody.prepend(row);
             } catch (_) {}
         };

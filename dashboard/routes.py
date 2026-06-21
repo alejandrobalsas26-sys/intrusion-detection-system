@@ -1,5 +1,7 @@
+import hmac
 import json
 import os
+import re
 import time
 
 from flask import (
@@ -15,7 +17,7 @@ from flask import (
     url_for,
 )
 
-from auth.core import get_user_role, verify_token
+from auth.core import get_user_role, list_users, verify_token
 from dashboard.queries import (
     database_is_readable,
     get_active_users_count,
@@ -27,9 +29,17 @@ from dashboard.queries import (
     get_open_incidents_count,
     get_recent_audit_events,
 )
-from dashboard.security import get_limiter, login_required
+from dashboard.security import get_limiter, login_required, require_role
 
 bp = Blueprint("main", __name__)
+
+# Input contracts for the untrusted login boundary. Enrollment only ever
+# creates usernames from this character set (see auth.cli), and the dashboard
+# login path verifies TOTP codes, which pyotp emits as fixed-length digits.
+# Rejecting anything else here stops oversized payloads and CRLF/control
+# characters from ever reaching the auth core or the audit log (log forging).
+_USERNAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+_TOTP_RE = re.compile(r"^[0-9]{6,8}$")
 
 
 @bp.route("/", methods=["GET"])
@@ -76,6 +86,13 @@ def login_submit() -> Response:
 
     if not username or not token:
         flash("Username and TOTP code are required.", "error")
+        return redirect(url_for("main.login_form"))
+
+    # Reject malformed credentials before they reach the auth core. Using the
+    # same generic message as a failed verification preserves anti-enumeration
+    # (an attacker cannot distinguish "bad format" from "wrong code").
+    if not _USERNAME_RE.match(username) or not _TOTP_RE.match(token):
+        flash("Authentication failed. Please verify your credentials.", "error")
         return redirect(url_for("main.login_form"))
 
     event = verify_token(username, token)
@@ -164,6 +181,18 @@ def api_incidents() -> Response:
     return jsonify({"incidents": incidents, "count": len(incidents)})
 
 
+@bp.route("/api/users", methods=["GET"])
+@require_role("admin")
+def api_users() -> Response:
+    """Enrolled-user roster for administrators (RBAC-gated).
+
+    Read-only and free of secrets: only username, creation time, role, and
+    active flag are exposed (never the encrypted TOTP secret or recovery
+    codes). Non-admin sessions receive 403; unauthenticated requests 401.
+    """
+    return jsonify({"users": list_users()})
+
+
 # --- Operational endpoints (no session: probes and scrapers can't do TOTP) ---
 
 
@@ -185,10 +214,24 @@ def readyz() -> Response:
 def metrics() -> Response:
     """Prometheus text exposition of aggregate counters.
 
-    Only aggregate counts are exposed (no event payloads, usernames, or IPs),
-    so this endpoint is safe to scrape without TOTP authentication. Restrict
-    at the reverse proxy if your threat model requires it.
+    Only aggregate counts are exposed (no event payloads, usernames, or IPs).
+    Even so, those counts reveal IDS operational state (e.g. whether an attack
+    produced incidents), so an operator can set METRICS_TOKEN to require a
+    bearer token. When unset, the endpoint stays public for probe/scraper
+    compatibility — restrict it at the reverse proxy if your threat model needs.
     """
+    expected_token = os.getenv("METRICS_TOKEN")
+    if expected_token:
+        auth_header = request.headers.get("Authorization", "")
+        provided = auth_header[7:] if auth_header.startswith("Bearer ") else ""
+        # Constant-time comparison avoids leaking the token via timing.
+        if not provided or not hmac.compare_digest(provided, expected_token):
+            response = current_app.response_class(
+                "Unauthorized\n", status=401, mimetype="text/plain"
+            )
+            response.headers["WWW-Authenticate"] = "Bearer"
+            return response
+
     lines = [
         "# HELP ids_up Whether the dashboard process is up.",
         "# TYPE ids_up gauge",

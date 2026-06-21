@@ -32,11 +32,12 @@ CREATE TABLE IF NOT EXISTS auth_attempts (
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_replay_protection ON auth_attempts(user_id, token_fingerprint);
 
--- Token Blacklist
-CREATE TABLE IF NOT EXISTS token_blacklist (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    token_hash TEXT NOT NULL UNIQUE,
-    expires_at TIMESTAMP NOT NULL,
-    reason TEXT,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-);
+-- Backoff and 90s replay-window lookups filter by user_id + recent timestamp
+-- (and success). This covering index keeps those reads off a full table scan
+-- as auth_attempts grows. Additive and idempotent (IF NOT EXISTS).
+CREATE INDEX IF NOT EXISTS idx_auth_attempts_user_time ON auth_attempts(user_id, timestamp, success);
+
+-- NOTE: a token_blacklist table previously lived here but was never read or
+-- written by any code path (replay protection is handled by the auth_attempts
+-- fingerprint + UNIQUE index above). It was removed to drop dead schema.
+-- Existing databases keep their empty table harmlessly; new ones simply omit it.

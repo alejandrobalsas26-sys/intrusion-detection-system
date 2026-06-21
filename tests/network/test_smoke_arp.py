@@ -6,7 +6,13 @@ from unittest.mock import patch
 
 from scapy.all import ARP
 
-# 1. Bootstrapping Temp Environment
+# 1. Bootstrapping Temp Environment.
+# Snapshot the env keys we mutate so tearDownClass can restore them and this
+# module does not leak DB_PATH (etc.) into the rest of the session, keeping the
+# suite order-independent.
+_ENV_KEYS = ("DB_PATH", "NETWORK_MONITOR_CONSENT", "ARP_SPOOF_MAX_CHANGES", "ARP_SPOOF_WINDOW_MINUTES")
+_ORIGINAL_ENV = {k: os.environ.get(k) for k in _ENV_KEYS}
+
 TEMP_DB = tempfile.NamedTemporaryFile(delete=False)
 TEMP_DB.close()
 os.environ["DB_PATH"] = TEMP_DB.name
@@ -20,11 +26,18 @@ from network.sensor import start_sensor  # noqa: E402
 class TestSmokeArp(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
-        if os.path.exists(os.environ["DB_PATH"]):
+        if os.path.exists(TEMP_DB.name):
             try:
-                os.unlink(os.environ["DB_PATH"])
+                os.unlink(TEMP_DB.name)
             except Exception:
                 pass
+        # Restore the original environment so later tests see the session's
+        # isolated DB_PATH from conftest, not this module's temp file.
+        for key, value in _ORIGINAL_ENV.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
     @patch("network.sensor.send_security_alert")
     @patch("network.sensor._check_os_privileges", return_value=True)

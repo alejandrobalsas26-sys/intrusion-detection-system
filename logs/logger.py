@@ -13,6 +13,13 @@ class SQLiteAuditHandler(logging.Handler):
     Implementa redundancia automática (Failsafe) y blindaje contra SQLi.
     """
 
+    # Concurrent writers (network sensor, auth core, detection engine) all
+    # converge on this single audit DB. Without a busy timeout, SQLite returns
+    # "database is locked" immediately on contention and the event is demoted
+    # to the failsafe text log. Waiting briefly for the lock keeps audit events
+    # in the structured store, where queries and correlation can see them.
+    _BUSY_TIMEOUT_MS = 5000
+
     def __init__(self, db_path: str, failsafe_path: str):
         super().__init__()
         self.db_path = db_path
@@ -20,15 +27,25 @@ class SQLiteAuditHandler(logging.Handler):
         self.schema_path = Path(__file__).parent / "schema.sql"
         self._bootstrap_db()
 
+    def _connect(self) -> sqlite3.Connection:
+        """Opens a connection with a bounded busy timeout for lock resilience."""
+        conn = sqlite3.connect(self.db_path, timeout=self._BUSY_TIMEOUT_MS / 1000)
+        conn.execute(f"PRAGMA busy_timeout = {self._BUSY_TIMEOUT_MS}")
+        return conn
+
     def _bootstrap_db(self):
         """Asegura la infraestructura de datos antes de la primera ingesta."""
         try:
             # Bug #2 Fix: mkdir garantiza que el path exista en despliegues limpios
             Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
-            with sqlite3.connect(self.db_path) as conn:
-                # Unicode Fix: Forzamos encoding para evitar errores de charmap en Windows
-                with open(self.schema_path, encoding="utf-8") as f:
-                    conn.executescript(f.read())
+            conn = self._connect()
+            try:
+                with conn:
+                    # Unicode Fix: forzamos encoding para evitar errores de charmap en Windows
+                    with open(self.schema_path, encoding="utf-8") as f:
+                        conn.executescript(f.read())
+            finally:
+                conn.close()
         except Exception as e:
             sys.stderr.write(f"CRITICAL BOOTSTRAP ERROR: {e}\n")
 
@@ -38,20 +55,26 @@ class SQLiteAuditHandler(logging.Handler):
             context_data = getattr(record, "context", {})
             context_json = json.dumps(context_data) if context_data else None
 
-            with sqlite3.connect(self.db_path) as conn:
-                cursor = conn.cursor()
-                query = "INSERT INTO audit_events (timestamp, level, module_source, message, context_data) VALUES (?, ?, ?, ?, ?)"  # noqa: E501
-                # SQLi Protection: Binding paramétrico nativo
-                cursor.execute(
-                    query,
-                    (
-                        record.created,
-                        record.levelname,
-                        record.name,
-                        record.getMessage(),
-                        context_json,
-                    ),
-                )
+            # `with conn` commits the INSERT; the explicit close releases the
+            # file handle immediately so a high log rate cannot accumulate open
+            # connections (and the locks they hold on Windows).
+            conn = self._connect()
+            try:
+                with conn:
+                    query = "INSERT INTO audit_events (timestamp, level, module_source, message, context_data) VALUES (?, ?, ?, ?, ?)"  # noqa: E501
+                    # SQLi Protection: Binding paramétrico nativo
+                    conn.execute(
+                        query,
+                        (
+                            record.created,
+                            record.levelname,
+                            record.name,
+                            record.getMessage(),
+                            context_json,
+                        ),
+                    )
+            finally:
+                conn.close()
         except Exception as e:
             self._write_failsafe(record, e)
 

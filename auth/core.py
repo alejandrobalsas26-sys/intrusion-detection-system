@@ -211,6 +211,13 @@ def enroll_user(username: str) -> tuple[str, list[str]]:
                     (user_id, hashed, salt),
                 )
             conn.commit()
+        except sqlite3.IntegrityError as e:
+            # The SELECT above is not atomic with the INSERT; a concurrent
+            # enrollment of the same username trips the UNIQUE constraint.
+            # Surface the domain error rather than a raw DB error so callers
+            # handle it identically to the pre-check path.
+            conn.rollback()
+            raise UserAlreadyExistsError(f"User '{username}' already exists.") from e
         except sqlite3.Error as e:
             conn.rollback()
             raise e
@@ -221,42 +228,55 @@ def enroll_user(username: str) -> tuple[str, list[str]]:
 
 
 def verify_token(username: str, token: str) -> AuthEvent:
-    """Verifies a TOTP token with replay protection and anti-enumeration."""
+    """Verifies a TOTP token with replay protection and anti-enumeration.
+
+    Structured in three phases so that a sleep-mode backoff delay is NEVER
+    served while a SQLite connection is held open:
+      1. identity resolution (short-lived read connection)
+      2. backoff enforcement (opens/closes its own connection, then sleeps)
+      3. replay check + verification + attempt record (single write connection)
+    """
     _bootstrap_auth_db()
+
+    # Phase 1 — identity resolution.
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
-
         cursor.execute(
             "SELECT id, encrypted_secret, is_active FROM users WHERE username = ?", (username,)
         )
         user_row = cursor.fetchone()
 
-        if not user_row:
-            return _dispatch_event(
-                AuthEvent(
-                    level="WARNING",
-                    event_name="AUTH_FAILURE",
-                    message=f"Authentication failed for user '{username}'.",
-                    context=_build_event_context("USER_NOT_FOUND"),
-                )
+    if not user_row:
+        return _dispatch_event(
+            AuthEvent(
+                level="WARNING",
+                event_name="AUTH_FAILURE",
+                message=f"Authentication failed for user '{username}'.",
+                context=_build_event_context("USER_NOT_FOUND"),
             )
+        )
 
-        user_id, encrypted_secret, is_active = user_row
+    user_id, encrypted_secret, is_active = user_row
 
-        if is_active == 0:
-            return _dispatch_event(
-                AuthEvent(
-                    level="WARNING",
-                    event_name="AUTH_FAILURE",
-                    message=f"Authentication failed for user '{username}'.",
-                    context=_build_event_context("USER_REVOKED"),
-                )
+    if is_active == 0:
+        return _dispatch_event(
+            AuthEvent(
+                level="WARNING",
+                event_name="AUTH_FAILURE",
+                message=f"Authentication failed for user '{username}'.",
+                context=_build_event_context("USER_REVOKED"),
             )
+        )
 
-        backoff_seconds, failure_count, rejection = _enforce_backoff(username, user_id)
-        if rejection is not None:
-            return rejection
+    # Phase 2 — backoff. No connection is held here, so a sleep-mode delay
+    # cannot pin a database handle or block other writers.
+    backoff_seconds, failure_count, rejection = _enforce_backoff(username, user_id)
+    if rejection is not None:
+        return rejection
 
+    # Phase 3 — replay check, cryptographic verification, attempt record.
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
         fingerprint = _token_fingerprint(user_id, token)
         cursor.execute(
             """
@@ -347,40 +367,49 @@ def verify_token(username: str, token: str) -> AuthEvent:
 
 
 def use_recovery_code(username: str, code: str) -> AuthEvent:
-    """Validates and consumes a one-time recovery code from the user's stored set."""
+    """Validates and consumes a one-time recovery code from the user's stored set.
+
+    Phased identically to verify_token so the backoff sleep never holds a
+    database connection (see verify_token for the rationale).
+    """
     _bootstrap_auth_db()
+
+    # Phase 1 — identity resolution.
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
-
         cursor.execute("SELECT id, is_active FROM users WHERE username = ?", (username,))
         user_row = cursor.fetchone()
 
-        if not user_row:
-            return _dispatch_event(
-                AuthEvent(
-                    level="WARNING",
-                    event_name="AUTH_FAILURE",
-                    message=f"Authentication failed for user '{username}'.",
-                    context=_build_event_context("USER_NOT_FOUND"),
-                )
+    if not user_row:
+        return _dispatch_event(
+            AuthEvent(
+                level="WARNING",
+                event_name="AUTH_FAILURE",
+                message=f"Authentication failed for user '{username}'.",
+                context=_build_event_context("USER_NOT_FOUND"),
             )
+        )
 
-        user_id, is_active = user_row
+    user_id, is_active = user_row
 
-        if is_active == 0:
-            return _dispatch_event(
-                AuthEvent(
-                    level="WARNING",
-                    event_name="AUTH_FAILURE",
-                    message=f"Authentication failed for user '{username}'.",
-                    context=_build_event_context("USER_REVOKED"),
-                )
+    if is_active == 0:
+        return _dispatch_event(
+            AuthEvent(
+                level="WARNING",
+                event_name="AUTH_FAILURE",
+                message=f"Authentication failed for user '{username}'.",
+                context=_build_event_context("USER_REVOKED"),
             )
+        )
 
-        backoff_seconds, failure_count, rejection = _enforce_backoff(username, user_id)
-        if rejection is not None:
-            return rejection
+    # Phase 2 — backoff (no connection held).
+    backoff_seconds, failure_count, rejection = _enforce_backoff(username, user_id)
+    if rejection is not None:
+        return rejection
 
+    # Phase 3 — replay check, code match, single-use consumption.
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
         fingerprint = _recovery_fingerprint(user_id, code)
         cursor.execute(
             """
