@@ -158,7 +158,7 @@ def rule_recon_then_auth(
     events: list[NormalizedEvent], window_seconds: int = CHAIN_WINDOW
 ) -> list[IncidentCandidate]:
     """Network reconnaissance followed by authentication failures (kill chain)."""
-    recon = [e for e in events if e.event_name in ("syn_scan", "arp_spoofing")]
+    recon = [e for e in events if e.event_name in ("syn_scan", "arp_spoofing", "icmp_sweep")]
     auth_failures = [e for e in events if e.event_name == "AUTH_FAILURE"]
     candidates = []
     for r in recon:

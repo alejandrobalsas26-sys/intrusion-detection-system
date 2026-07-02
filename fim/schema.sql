@@ -17,3 +17,14 @@ CREATE TABLE IF NOT EXISTS fim_events (
 -- Additive index: timeline queries and retention purges scan by time.
 CREATE INDEX IF NOT EXISTS idx_fim_events_time ON fim_events(timestamp);
 
+-- Directories under watch for new-file (CREATED) detection. Additive: the
+-- per-file baseline flow above is unchanged when this table is empty.
+CREATE TABLE IF NOT EXISTS fim_directories (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    dirpath TEXT UNIQUE NOT NULL,
+    recursive INTEGER DEFAULT 1,
+    created_severity TEXT DEFAULT 'WARNING',
+    last_seen DATETIME DEFAULT CURRENT_TIMESTAMP,
+    is_active INTEGER DEFAULT 1
+);
+

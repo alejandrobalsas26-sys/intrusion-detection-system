@@ -21,7 +21,15 @@ SEVERITY_BASE: dict[str, int] = {
 }
 
 # Event types with outsized real-world impact get a flat uplift.
-HIGH_IMPACT_EVENTS = {"arp_spoofing", "REPLAY_ATTACK", "FIM_MODIFIED", "FIM_DELETED"}
+# dns_ioc_query qualifies: contact with operator-curated known-bad
+# infrastructure is a high-confidence compromise signal, not just recon.
+HIGH_IMPACT_EVENTS = {
+    "arp_spoofing",
+    "REPLAY_ATTACK",
+    "FIM_MODIFIED",
+    "FIM_DELETED",
+    "dns_ioc_query",
+}
 
 
 def _context_amplifier(context: dict[str, Any]) -> int:

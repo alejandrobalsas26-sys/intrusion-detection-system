@@ -1,1 +1,9 @@
-{"critical_files": [{"path": ".env", "severity": "CRITICAL"}]} 
+{
+  "critical_files": [
+    {"path": ".env", "severity": "CRITICAL"}
+  ],
+  "critical_dirs": [
+    {"path": "demo/protected", "recursive": true, "created_severity": "WARNING"}
+  ]
+}
+

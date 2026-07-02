@@ -20,6 +20,11 @@ logs/ids_database.sqlite3
 logs/failsafe.log
 fim/config.json
 
+# Demo scratch artifacts (recreated on every demo run)
+demo/protected_live/
+demo/_fim_demo_config.json
+demo/_demo_ioc_ips.txt
+
 # Secrets and Credentials (NEVER UPLOAD)
 .env
 

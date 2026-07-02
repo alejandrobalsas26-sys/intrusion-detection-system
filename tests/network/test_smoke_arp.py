@@ -6,38 +6,53 @@ from unittest.mock import patch
 
 from scapy.all import ARP
 
-# 1. Bootstrapping Temp Environment.
-# Snapshot the env keys we mutate so tearDownClass can restore them and this
-# module does not leak DB_PATH (etc.) into the rest of the session, keeping the
-# suite order-independent.
-_ENV_KEYS = ("DB_PATH", "NETWORK_MONITOR_CONSENT", "ARP_SPOOF_MAX_CHANGES", "ARP_SPOOF_WINDOW_MINUTES")
-_ORIGINAL_ENV = {k: os.environ.get(k) for k in _ENV_KEYS}
-
-TEMP_DB = tempfile.NamedTemporaryFile(delete=False)
-TEMP_DB.close()
-os.environ["DB_PATH"] = TEMP_DB.name
-os.environ["NETWORK_MONITOR_CONSENT"] = "true"
-os.environ["ARP_SPOOF_MAX_CHANGES"] = "1"
-os.environ["ARP_SPOOF_WINDOW_MINUTES"] = "5"
-
-from network.sensor import start_sensor  # noqa: E402
+from logs.logger import SQLiteAuditHandler, get_logger
+from network.sensor import start_sensor
 
 
 class TestSmokeArp(unittest.TestCase):
+    """Full ARP-spoofing path: sensor thread -> detector -> alert + audit DB.
+
+    The "exactly one CRITICAL row" assertion needs a database nobody else
+    writes to. Swapping the process-wide DB_PATH would leak into every other
+    test (pytest imports all modules before running any test), so instead the
+    sensor logger gets a private SQLiteAuditHandler bound to a test-owned temp
+    DB for the duration of this class — order-independent in both directions.
+    """
+
+    _ENV = {
+        "NETWORK_MONITOR_CONSENT": "true",
+        "ARP_SPOOF_MAX_CHANGES": "1",
+        "ARP_SPOOF_WINDOW_MINUTES": "5",
+    }
+
+    @classmethod
+    def setUpClass(cls):
+        cls._old_env = {k: os.environ.get(k) for k in cls._ENV}
+        os.environ.update(cls._ENV)
+
+        tmp = tempfile.NamedTemporaryFile(suffix=".sqlite3", delete=False)
+        tmp.close()
+        cls.db_path = tmp.name
+        cls._logger = get_logger("network_sensor")
+        cls._old_handlers = cls._logger.handlers[:]
+        cls._logger.handlers = [
+            SQLiteAuditHandler(cls.db_path, cls.db_path + ".failsafe.log")
+        ]
+
     @classmethod
     def tearDownClass(cls):
-        if os.path.exists(TEMP_DB.name):
-            try:
-                os.unlink(TEMP_DB.name)
-            except Exception:
-                pass
-        # Restore the original environment so later tests see the session's
-        # isolated DB_PATH from conftest, not this module's temp file.
-        for key, value in _ORIGINAL_ENV.items():
+        cls._logger.handlers = cls._old_handlers
+        for key, value in cls._old_env.items():
             if value is None:
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = value
+        for path in (cls.db_path, cls.db_path + ".failsafe.log"):
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
 
     @patch("network.sensor.send_security_alert")
     @patch("network.sensor._check_os_privileges", return_value=True)
@@ -63,7 +78,7 @@ class TestSmokeArp(unittest.TestCase):
         self.assertIn("ARP Spoofing detected", kwargs["alert_message"])
 
         # Step 4: Validate L0 (SQLite) Real DB Integration
-        conn = sqlite3.connect(os.environ["DB_PATH"])
+        conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
 
         rows = cursor.execute(

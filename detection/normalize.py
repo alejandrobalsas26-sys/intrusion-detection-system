@@ -121,15 +121,25 @@ def _classify_audit_row(module: str, message: str, context: dict) -> tuple[str, 
         return ("auth", "AUTH_EVENT", entity)
 
     if module in ("fim_monitor", "fim"):
-        if "deleted" in message.lower():
+        # Preferred path: FIM events dispatched since the structured-context
+        # fix carry event_type/filepath verbatim — no message parsing needed.
+        ctx_type = context.get("event_type")
+        if ctx_type in ("MODIFIED", "DELETED", "CREATED"):
+            return ("fim", f"FIM_{ctx_type}", context.get("filepath"))
+
+        lowered = message.lower()
+        if "new file created" in lowered:
+            name = "FIM_CREATED"
+        elif "deleted" in lowered:
             name = "FIM_DELETED"
-        elif "integrity breach" in message.lower() or "modified" in message.lower():
+        elif "integrity breach" in lowered or "modified" in lowered:
             name = "FIM_MODIFIED"
         else:
             name = "FIM_EVENT"
-        # FIM messages embed the path, e.g. "... breach detected in /etc/passwd."
+        # Legacy fallback: FIM messages embed the path,
+        # e.g. "... breach detected in /etc/passwd."
         entity = None
-        for marker in ("file ", " in "):
+        for marker in ("directory: ", "file ", " in "):
             if marker in message:
                 tail = message.split(marker, 1)[1].strip().rstrip(".")
                 if tail:

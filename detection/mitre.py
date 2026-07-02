@@ -27,6 +27,10 @@ EVENT_TECHNIQUE_MAP: dict[str, tuple[Technique, ...]] = {
     "arp_spoofing": (
         Technique("T1557.002", "Adversary-in-the-Middle: ARP Cache Poisoning", "credential-access"),
     ),
+    "icmp_sweep": (Technique("T1018", "Remote System Discovery", "discovery"),),
+    "dns_ioc_query": (
+        Technique("T1071.004", "Application Layer Protocol: DNS", "command-and-control"),
+    ),
     "AUTH_FAILURE": (Technique("T1110", "Brute Force", "credential-access"),),
     "RATE_LIMITED": (Technique("T1110", "Brute Force", "credential-access"),),
     "REPLAY_ATTACK": (

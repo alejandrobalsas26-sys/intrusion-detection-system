@@ -1,0 +1,8 @@
+{"offset_seconds": 0, "level": "CRITICAL", "module_source": "network_sensor", "message": "DetectionEvent: CRITICAL from syn_scan - SYN scan detected from 198.51.100.77: 35 unique ports in 10s window.", "context": {"source_ip": "198.51.100.77", "port_count": 35}}
+{"offset_seconds": 60, "level": "WARNING", "module_source": "auth_core", "message": "Authentication failed for user 'admin'.", "context": {"reason_code": "INVALID_TOTP", "source_ip": "198.51.100.77"}}
+{"offset_seconds": 90, "level": "WARNING", "module_source": "auth_core", "message": "Authentication failed for user 'admin'.", "context": {"reason_code": "INVALID_TOTP", "source_ip": "198.51.100.77"}}
+{"offset_seconds": 120, "level": "WARNING", "module_source": "auth_core", "message": "Authentication failed for user 'admin'.", "context": {"reason_code": "INVALID_TOTP", "source_ip": "198.51.100.77"}}
+{"offset_seconds": 150, "level": "WARNING", "module_source": "auth_core", "message": "Authentication failed for user 'admin'.", "context": {"reason_code": "INVALID_TOTP", "source_ip": "198.51.100.77"}}
+{"offset_seconds": 180, "level": "WARNING", "module_source": "auth_core", "message": "Authentication failed for user 'admin'.", "context": {"reason_code": "INVALID_TOTP", "source_ip": "198.51.100.77"}}
+{"offset_seconds": 200, "level": "INFO", "module_source": "auth_core", "message": "User 'admin' authenticated successfully.", "context": {"source_ip": "198.51.100.77"}}
+{"offset_seconds": 240, "level": "CRITICAL", "module_source": "fim_monitor", "message": "CRITICAL: Integrity breach detected in demo/protected/credentials.txt.", "context": {"event_type": "MODIFIED", "filepath": "demo/protected/credentials.txt"}}

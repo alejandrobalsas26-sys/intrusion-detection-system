@@ -8,8 +8,7 @@ from alerts.email_alert import send_security_alert
 from detection.dedup import EventDeduplicator
 from logs.logger import get_logger
 
-from .detectors.arp_detector import ArpDetector
-from .detectors.syn_detector import SynDetector
+from .detectors import build_default_detectors
 
 logger = get_logger("network_sensor")
 
@@ -41,18 +40,8 @@ def start_sensor() -> threading.Thread | None:
         logger.warning("Insufficient privileges to start network sensor.")
         return None
 
-    # 1. Initialize Detectors with Env Config
-    arp_threshold = int(os.getenv("ARP_SPOOF_MAX_CHANGES", 1))
-    arp_window = int(os.getenv("ARP_SPOOF_WINDOW_MINUTES", 5)) * 60
-
-    syn_threshold = int(os.getenv("SYN_SCAN_THRESHOLD", 20))
-    syn_window = int(os.getenv("SYN_SCAN_WINDOW_SECONDS", 10))
-
-    # Plug-in Architecture: List of active detectors
-    detectors = [
-        ArpDetector(max_changes=arp_threshold, window_seconds=arp_window),
-        SynDetector(threshold=syn_threshold, window_seconds=syn_window),
-    ]
+    # 1. Initialize Detectors with Env Config (shared factory with PCAP replay)
+    detectors = build_default_detectors()
 
     # Optional duplicate suppression across detector re-triggers. Disabled by
     # default (window=0) to preserve legacy alert-per-event behavior.
@@ -98,8 +87,13 @@ def start_sensor() -> threading.Thread | None:
                 # Evitamos que un error en un detector mate al sniffer
                 logger.error(f"Error in detector {detector.__class__.__name__}: {e}")
 
-    # 2. Start Sniffer in a daemon thread
-    bpf_filter = "arp or (tcp[tcpflags] & (tcp-syn|tcp-ack) == tcp-syn)"
+    # 2. Start Sniffer in a daemon thread. The filter admits exactly what the
+    # detector stack consumes: ARP (spoofing), bare SYNs (scans), ICMP echo
+    # (sweeps), and DNS queries (watchlist matches).
+    bpf_filter = (
+        "arp or icmp or udp port 53 or "
+        "(tcp[tcpflags] & (tcp-syn|tcp-ack) == tcp-syn)"
+    )
 
     sniffer_thread = threading.Thread(
         target=sniff,

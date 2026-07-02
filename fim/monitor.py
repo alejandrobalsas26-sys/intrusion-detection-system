@@ -55,8 +55,43 @@ def calculate_sha256(filepath: str) -> str | None:
         return None
 
 
+def _iter_directory_files(dirpath: str, recursive: bool) -> list[str]:
+    """Lists regular files under a monitored directory, normalized for
+    stable set-membership comparison between baseline and check time."""
+    root = Path(dirpath)
+    if not root.is_dir():
+        return []
+    pattern = "**/*" if recursive else "*"
+    return sorted(str(p) for p in root.glob(pattern) if p.is_file())
+
+
+def _baseline_file(cursor: sqlite3.Cursor, filepath: str) -> bool:
+    """Hashes and upserts one file baseline. Returns True on success."""
+    current_hash = calculate_sha256(filepath)
+    if not current_hash:
+        logger.warning(f"Could not hash {filepath} (Does the file exist?)")
+        return False
+    cursor.execute(
+        """
+        INSERT OR REPLACE INTO file_baselines (filepath, hash_sha256, is_active)
+        VALUES (?, ?, 1)
+    """,
+        (filepath, current_hash),
+    )
+    logger.info(f"Baseline established for: {filepath}")
+    return True
+
+
 def initialize_baselines(config_path: str = "fim/config.json") -> None:
-    """Reads configuration and stores initial hashes in the database."""
+    """Reads configuration and stores initial hashes in the database.
+
+    Supports two config sections:
+      * ``critical_files`` — individual files (legacy behavior, unchanged)
+      * ``critical_dirs``  — directories: every contained file is baselined
+        and the directory is registered so future checks can flag files
+        CREATED inside it. Optional keys: ``recursive`` (default true),
+        ``created_severity`` (default WARNING).
+    """
     if not os.path.exists(config_path):
         logger.warning(f"Configuration file {config_path} not found.")
         return
@@ -69,20 +104,28 @@ def initialize_baselines(config_path: str = "fim/config.json") -> None:
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
         for item in config.get("critical_files", []):
-            filepath = item["path"]
-            current_hash = calculate_sha256(filepath)
+            _baseline_file(cursor, item["path"])
 
-            if current_hash:
-                cursor.execute(
-                    """
-                    INSERT OR REPLACE INTO file_baselines (filepath, hash_sha256, is_active)
-                    VALUES (?, ?, 1)
-                """,
-                    (filepath, current_hash),
-                )
-                logger.info(f"Baseline established for: {filepath}")
-            else:
-                logger.warning(f"Could not hash {filepath} (Does the file exist?)")
+        for item in config.get("critical_dirs", []):
+            dirpath = item["path"]
+            recursive = bool(item.get("recursive", True))
+            severity = str(item.get("created_severity", "WARNING")).upper()
+            if severity not in ("INFO", "WARNING", "ERROR", "CRITICAL"):
+                severity = "WARNING"
+            if not os.path.isdir(dirpath):
+                logger.warning(f"Monitored directory {dirpath} does not exist; skipping.")
+                continue
+            cursor.execute(
+                """
+                INSERT OR REPLACE INTO fim_directories
+                    (dirpath, recursive, created_severity, is_active)
+                VALUES (?, ?, ?, 1)
+            """,
+                (dirpath, int(recursive), severity),
+            )
+            for filepath in _iter_directory_files(dirpath, recursive):
+                _baseline_file(cursor, filepath)
+            logger.info(f"Directory baseline established for: {dirpath}")
 
         conn.commit()
 
@@ -127,6 +170,48 @@ def check_integrity() -> None:
             else:
                 logger.debug(f"{filepath}: No changes detected.")
 
+        _check_directories_for_created(conn)
+
+
+def _check_directories_for_created(conn: sqlite3.Connection) -> None:
+    """Flags files that appeared inside monitored directories since baseline.
+
+    Each new file raises exactly one CREATED event and is then folded into the
+    baseline set, so subsequent tampering with it surfaces as MODIFIED/DELETED
+    rather than repeated CREATED noise. If the file cannot be hashed it stays
+    un-baselined and will be re-reported on the next check (deliberate: an
+    unreadable new file in a protected directory should not go quiet).
+    """
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT dirpath, recursive, created_severity FROM fim_directories WHERE is_active = 1"
+    )
+    directories = cursor.fetchall()
+    if not directories:
+        return
+
+    cursor.execute("SELECT filepath FROM file_baselines WHERE is_active = 1")
+    known = {row[0] for row in cursor.fetchall()}
+
+    for dirpath, recursive, severity in directories:
+        for filepath in _iter_directory_files(dirpath, bool(recursive)):
+            if filepath in known:
+                continue
+            _dispatch_fim_event(
+                FimEvent(
+                    level=severity or "WARNING",
+                    event_type="CREATED",
+                    filepath=filepath,
+                    message=(
+                        f"New file created in monitored directory: {filepath} "
+                        f"(watch root: {dirpath})."
+                    ),
+                )
+            )
+            if _baseline_file(cursor, filepath):
+                known.add(filepath)
+    conn.commit()
+
 
 def _dispatch_fim_event(event: FimEvent) -> None:
     """Dispatches the FIM event to DB, Logger, and Alerts."""
@@ -141,14 +226,18 @@ def _dispatch_fim_event(event: FimEvent) -> None:
             )
             conn.commit()
 
-        # L0: Local Logging
+        # L0: Local Logging. The audit handler serializes record.context into
+        # the context_data column; loose extra attributes would be dropped, so
+        # the structured fields ride inside one "context" dict.
         log_method = getattr(logger, event.level.lower(), logger.info)
         log_method(
             event.message,
             extra={
-                "filepath": event.filepath,
-                "event_type": event.event_type,
-                "timestamp": event.timestamp,
+                "context": {
+                    "filepath": event.filepath,
+                    "event_type": event.event_type,
+                    "timestamp": event.timestamp,
+                }
             },
         )
 

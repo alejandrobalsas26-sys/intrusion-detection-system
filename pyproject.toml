@@ -36,7 +36,7 @@ prod = [
 # Flat-layout project with several top-level packages; declare them explicitly
 # so editable installs don't fail setuptools auto-discovery.
 [tool.setuptools]
-packages = ["ai", "alerts", "auth", "dashboard", "detection", "fim", "logs", "network"]
+packages = ["ai", "alerts", "auth", "dashboard", "detection", "fim", "ids", "logs", "network"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
