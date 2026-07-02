@@ -14,15 +14,16 @@ Configure in `.env`:
 ```ini
 # Generate key with: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 MFA_ENCRYPTION_KEY=your_fernet_key_here
-MFA_BACKOFF_THRESHOLD=5
+MFA_BACKOFF_ALERT_THRESHOLD=5
+# One-time recovery codes issued per enrollment (default 10, clamped to 1..50)
 MFA_RECOVERY_CODES_COUNT=10
 ```
 
 ## Usage
-The module provides an `AuthManager` to handle:
-- **Registration:** Adding new analysts (generates TOTP secrets and encrypted recovery codes).
-- **Login:** Verifying TOTP codes and handling rate-limiting (backoff).
-- **Recovery:** Using backup codes when TOTP is unavailable.
+The module exposes plain functions (`auth.core`) that handle:
+- **Registration:** `enroll_user` — adds new analysts (generates TOTP secrets and encrypted recovery codes).
+- **Login:** `verify_token` — verifies TOTP codes and handles rate-limiting (backoff).
+- **Recovery:** `use_recovery_code` — consumes a backup code when TOTP is unavailable.
 
 ## Security Analysis
 - **Identity:** Validates the human operator.
@@ -73,7 +74,7 @@ Provisions a new user in the system.
 * **Outputs:**
   * A terminal-rendered ASCII QR Code.
   * A standard `otpauth://` provisioning URI.
-  * 10 Single-use Recovery Codes.
+  * Single-use recovery codes (`MFA_RECOVERY_CODES_COUNT`, default 10).
 * **Security Note:** The recovery codes are displayed only once. They must be saved securely by the administrator or the provisioned analyst immediately.
 
 #### 2. `revoke <username>`
@@ -86,9 +87,14 @@ Displays a tabulated overview of all users.
 * **Columns:** Username, Created At, Role, Status (`Active` / `Revoked`).
 * Sorted by most recently created.
 
+#### 4. `set-role <username> <role>`
+Assigns an RBAC role to an existing user.
+* Valid roles: `analyst` (default at enrollment), `admin`, `viewer`.
+* The dashboard binds the role into the session at login and gates
+  admin-only endpoints (e.g. `/api/users`) with it.
+
 ### Tech Debt & Future Considerations
 * **Structured Auditing:** Currently, CLI actions use standard logging (e.g., `logger.info`). In future iterations (Dashboard wiring), these will be refactored to emit standardized `AuthEvent` objects for L1 alerts.
-* **RBAC Implementation:** The `users` table contains a `role` column (default: 'analyst'). Role-Based Access Control is deferred to a future branch.
 
 ### Implementation Status
 - [x] Branch 3A: Cryptographic Primitives & Storage

@@ -54,7 +54,7 @@ def start_sensor() -> threading.Thread | None:
             try:
                 event = detector.process_packet(pkt)
 
-                # GUARDIA: Solo procesamos si el detector encontró algo
+                # Guard: only proceed when the detector found something
                 if event:
                     if deduplicator is not None:
                         entity = event.context.get("source_ip") or event.context.get(
@@ -78,13 +78,13 @@ def start_sensor() -> threading.Thread | None:
                     )
 
                     # B. Dispatch to L0 (Logs/Persistence)
-                    # Mapeo dinámico de nivel (critical, warning, info)
+                    # Dynamic level mapping (critical, warning, info)
                     log_func = getattr(logger, event.level.lower(), logger.info)
                     log_func(
                         f"DetectionEvent: {event.level} from {event.detector_name} - {event.message}"  # noqa: E501
                     )
             except Exception as e:
-                # Evitamos que un error en un detector mate al sniffer
+                # One failing detector must not kill the sniffer
                 logger.error(f"Error in detector {detector.__class__.__name__}: {e}")
 
     # 2. Start Sniffer in a daemon thread. The filter admits exactly what the

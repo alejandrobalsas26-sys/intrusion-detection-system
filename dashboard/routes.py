@@ -21,6 +21,7 @@ from auth.core import get_user_role, list_users, verify_token
 from dashboard.queries import (
     database_is_readable,
     get_active_users_count,
+    get_audit_events_since,
     get_database_size_bytes,
     get_event_counts_by_level,
     get_fim_events_count,
@@ -134,24 +135,20 @@ def event_stream() -> Response:
     reconnects automatically, which re-runs the authentication check above.
     Heartbeat comments keep intermediaries from buffering or killing the socket.
     """
-    import time as _time
-
     max_lifetime = int(os.getenv("SSE_MAX_LIFETIME_SECONDS", "900"))
     poll_interval = int(os.getenv("SSE_POLL_INTERVAL_SECONDS", "5"))
 
     def generate():
         last_id = 0
-        started = _time.monotonic()
-        while _time.monotonic() - started < max_lifetime:
-            from dashboard.queries import get_audit_events_since
-
+        started = time.monotonic()
+        while time.monotonic() - started < max_lifetime:
             rows = get_audit_events_since(last_id)
             for row in rows:
                 last_id = max(last_id, row.get("id", 0))
                 yield f"data: {json.dumps(row)}\n\n"
             if not rows:
                 yield ": heartbeat\n\n"
-            _time.sleep(poll_interval)
+            time.sleep(poll_interval)
 
     # NOTE: spec used `bp.current_app` which does not exist on a Blueprint;
     # using Flask's `current_app` proxy to access the app's response_class.

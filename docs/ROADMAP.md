@@ -50,7 +50,7 @@ CLI), network detectors, FIM, dashboard routes/queries. 48 passing.
 | D-4 | No **correlation engine** — events are islands; a SYN scan followed by auth failures is never connected | **Fixed** — `detection/correlation.py` sliding-window rules → `incidents` table |
 | D-5 | No **event deduplication** | **Fixed** — `detection/dedup.py` fingerprint suppressor |
 | D-6 | No Sigma rule support | Phase 2 (rule compiler targeting `NormalizedEvent`) |
-| D-7 | FIM detects MODIFIED/DELETED but not CREATED (new files in monitored dirs); per-file config only | Phase 2 (directory baselines) |
+| D-7 | FIM detects MODIFIED/DELETED but not CREATED (new files in monitored dirs); per-file config only | **Fixed** — directory watches raise CREATED and fold new files into the baseline |
 | D-8 | No behavioral analytics / anomaly baselines | Phase 3 |
 
 ### 2.3 Observability gaps (Priority 4)
@@ -90,7 +90,8 @@ CLI), network detectors, FIM, dashboard routes/queries. 48 passing.
   a notify queue at Phase 3 scale.
 * `requirements.txt` pins `pytest==9.0.2` while `pyproject.toml` dev extra wants
   `pytest>=8.0` — harmless but duplicated dependency sources.
-* Mixed Spanish/English comments — cosmetic; left as-is (no functional impact).
+* ~~Mixed Spanish/English comments~~ — resolved; comments, docstrings, and module
+  docs are now uniformly English.
 
 ---
 
@@ -127,13 +128,24 @@ CLI), network detectors, FIM, dashboard routes/queries. 48 passing.
 7. ✅ Observability/DB: `ids_database_size_bytes` + `ids_last_event_timestamp_seconds`
    metrics, `quick_check`, and WAL `checkpoint` maintenance.
 
+### Phase 1.75 — homelab reproducibility (this iteration)
+
+1. ✅ Offline replay paths: JSONL events (`detection/replay.py`) and PCAP
+   through the real detector stack (`network/replay.py`, synthetic captures
+   in `samples/`).
+2. ✅ Reproducible demo attack chain (`demo/`) with real FIM tampering in a
+   scratch directory; no privileges or network required.
+3. ✅ New detectors: ICMP ping sweep and DNS IOC-watchlist matching.
+4. ✅ FIM directory watches (CREATED events for planted files).
+5. ✅ Orchestrator CLI: `python -m ids check | demo | run`.
+
 ### Phase 2 — detection depth & analyst workflow
 
 * Sigma rule loader compiling to `NormalizedEvent` predicates.
-* FIM: directory baselines, CREATED detection, scheduled daemon mode.
+* FIM: scheduled daemon mode (directory baselines and CREATED shipped in 1.75).
 * JSON structured-log stream handler (ship to external SIEM).
 * Dashboard: search/filter, event drill-down, incident timeline view.
-* DNS / ICMP-sweep / beaconing detectors.
+* Beaconing detector (DNS and ICMP-sweep shipped in 1.75).
 * pip-audit + SBOM (CycloneDX) generation task.
 
 ### Phase 3 — scale & enterprise

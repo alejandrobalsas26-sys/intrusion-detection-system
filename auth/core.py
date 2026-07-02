@@ -43,6 +43,22 @@ BACKOFF_MAX_DELAY = int(os.getenv("MFA_BACKOFF_MAX_DELAY_SECONDS", "60"))
 BACKOFF_WINDOW = int(os.getenv("MFA_BACKOFF_WINDOW_SECONDS", "300"))
 BACKOFF_ALERT_THRESHOLD = int(os.getenv("MFA_BACKOFF_ALERT_THRESHOLD", "5"))
 
+DEFAULT_RECOVERY_CODES_COUNT = 10
+
+
+def _recovery_codes_count() -> int:
+    """One-time recovery codes issued per enrollment (MFA_RECOVERY_CODES_COUNT).
+
+    Read at call time (like _backoff_mode) rather than at import. A non-numeric
+    value falls back to the default; the result is clamped to 1..50 so a typo
+    can neither disable recovery entirely nor flood the users' code sets.
+    """
+    try:
+        count = int(os.getenv("MFA_RECOVERY_CODES_COUNT", str(DEFAULT_RECOVERY_CODES_COUNT)))
+    except ValueError:
+        return DEFAULT_RECOVERY_CODES_COUNT
+    return max(1, min(count, 50))
+
 
 def _backoff_mode() -> str:
     """Backoff strategy, read at call time so web/CLI contexts can differ.
@@ -188,7 +204,7 @@ def enroll_user(username: str) -> tuple[str, list[str]]:
     encrypted_secret = crypto.encrypt(raw_secret)
 
     recovery_codes = []
-    for _ in range(10):
+    for _ in range(_recovery_codes_count()):
         code = "".join(secrets.choice(string.ascii_uppercase + string.digits) for _ in range(8))
         recovery_codes.append(code)
 

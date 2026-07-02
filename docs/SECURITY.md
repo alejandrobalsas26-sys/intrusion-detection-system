@@ -57,8 +57,9 @@ reproducible; review diffs when bumping pins.
   (15-minute lifetime bounds the exposure); server-side sessions are the
   Phase 3 fix.
 * FIM has a TOCTOU window between hash computations (accepted MVP debt).
-* `/metrics` is unauthenticated by design (aggregate counters only); restrict
-  at the reverse proxy if your threat model requires it.
+* `/metrics` is unauthenticated by default (aggregate counters only, for
+  probe/scraper compatibility); set `METRICS_TOKEN` to require a bearer token,
+  or restrict it at the reverse proxy if your threat model requires it.
 * The in-process login rate limiter is per-process; if you run multiple
   Waitress instances behind a load balancer the effective limit is
   `limit × instances`. A single Waitress process (the default) uses threads, not

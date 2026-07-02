@@ -1,35 +1,43 @@
-# Módulo L1: Email Alerts (SMTP)
+# Module L1: Email Alerts (SMTP)
 
-Módulo encargado de la notificación asíncrona de eventos de seguridad del IDS. Diseñado con foco en tolerancia a fallos de red, granularidad forense y manejo seguro de adjuntos MIME (defensa contra *zip bombs* y *OOM kills*).
+Asynchronous e-mail notification of IDS security events. Designed for
+network-fault tolerance, forensic granularity, and safe MIME attachment
+handling (defense against *zip bombs* and *OOM kills*).
 
-## Requisitos Previos (App Passwords)
+## Prerequisites (App Passwords)
 
-Google bloquea la autenticación SMTP básica con contraseñas regulares desde 2022. Es obligatorio utilizar una **App Password** para la cuenta emisora:
-1. Activa 2FA (Verificación en dos pasos) en tu cuenta de Google.
-2. Genera una contraseña de aplicación en: [App Passwords](https://myaccount.google.com/apppasswords)
-3. **ADVERTENCIA:** NUNCA commitees la App Password. Define esta credencial únicamente en el entorno local (referencia: `.env.example`).
+Google has blocked basic SMTP authentication with regular passwords since
+2022. An **App Password** is required for the sending account:
+1. Enable 2FA (two-step verification) on your Google account.
+2. Generate an application password at: [App Passwords](https://myaccount.google.com/apppasswords)
+3. **WARNING:** NEVER commit the App Password. Define this credential only in
+   the local environment (reference: `.env.example`).
 
-## Variables de Entorno (Contrato 12-Factor)
+## Environment Variables (12-Factor contract)
 
-El módulo requiere las siguientes variables definidas en el entorno:
+The module requires the following variables in the environment:
 
-*   `EMAIL_SENDER`: Correo emisor autorizado (ej. ids.service.account@gmail.com).
-*   `EMAIL_PASSWORD`: App Password generada de 16 caracteres (sin espacios).
-*   `ALERT_RECEIVER`: Correo del administrador o SOC que recibirá las alertas.
-*   `SMTP_HOST`: (Opcional) Servidor SMTP a utilizar. Default: `smtp.gmail.com`.
-*   `SMTP_PORT`: (Opcional) Puerto para la conexión STARTTLS. Default: `587`.
+*   `EMAIL_SENDER`: Authorized sending address (e.g. ids.service.account@gmail.com).
+*   `EMAIL_PASSWORD`: Generated 16-character App Password (no spaces).
+*   `ALERT_RECEIVER`: Administrator or SOC address that receives the alerts.
+*   `SMTP_HOST`: (Optional) SMTP server to use. Default: `smtp.gmail.com`.
+*   `SMTP_PORT`: (Optional) Port for the STARTTLS connection. Default: `587`.
+*   `ALERT_DEDUP_WINDOW_SECONDS`: (Optional) Suppress an identical alert
+    (level + module + message) repeated within this window. Default: `0` (off).
 
-## Dependencias Externas
-*   `python-dotenv`: Requerido para la carga de variables `.env` en entornos de desarrollo local. *(Nota: El manifiesto completo de dependencias se añadirá en la rama `chore(infra)` tras el merge de este módulo).*
+## External Dependencies
+*   `python-dotenv`: Loads `.env` variables in local development environments.
+    The full dependency manifest lives in [`requirements.txt`](../requirements.txt).
 
-## Ejemplo de Uso
+## Usage Example
 ```python
 from alerts import send_security_alert
 
-# La inyección del logger (L0) y el manejo de excepciones SMTP operan de forma transparente.
+# Logger (L0) injection and SMTP exception handling are transparent to callers.
 success = send_security_alert(
     event_level="CRITICAL",
     module_source="ids_core",
-    alert_message="Se ha detectado acceso no autorizado en el puerto 22.",
-    attachment_paths=["/var/log/auth.log"] # Ignorado de forma segura si no existe o excede 15MB.
+    alert_message="Unauthorized access detected on port 22.",
+    attachment_paths=["/var/log/auth.log"]  # safely skipped if missing or over 15 MB
 )
+```

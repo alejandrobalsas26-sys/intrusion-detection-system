@@ -7,16 +7,16 @@ from pathlib import Path
 from detection.dedup import EventDeduplicator
 from logs import get_logger
 
-# Constantes de configuración del módulo
-MAX_ATTACHMENT_SIZE_BYTES = 15 * 1024 * 1024  # 15 MB conservador para pre-Base64
+# Module configuration constants
+MAX_ATTACHMENT_SIZE_BYTES = 15 * 1024 * 1024  # conservative 15 MB, pre-Base64
 
-# Inyectar dependencia del logger a nivel de módulo (Lectura A)
+# Module-level logger dependency
 logger = get_logger("alerts")
 
-# Throttle de alertas duplicadas (opt-in). Con ALERT_DEDUP_WINDOW_SECONDS > 0,
-# una alerta idéntica (nivel + módulo + mensaje) dentro de la ventana se
-# suprime para evitar inundar el buzón / el rate limit del SMTP. Desactivado
-# por defecto para preservar el comportamiento histórico alerta-por-evento.
+# Duplicate-alert throttle (opt-in). With ALERT_DEDUP_WINDOW_SECONDS > 0, an
+# identical alert (level + module + message) inside the window is suppressed
+# so a chatty detector cannot flood the mailbox or trip the SMTP rate limit.
+# Disabled by default to preserve the historical alert-per-event behavior.
 _alert_throttle = EventDeduplicator(window_seconds=0)
 
 
@@ -37,27 +37,27 @@ def send_security_alert(
     attachment_paths: list[str] = None,
 ) -> bool:
     """
-    Envía una alerta de seguridad por correo electrónico usando SMTP con STARTTLS.
+    Sends a security alert e-mail over SMTP with STARTTLS.
 
     Args:
-        event_level (str): Nivel de severidad de la alerta (ej. 'CRITICAL', 'WARNING').
-        module_source (str): Nombre del módulo que originó la alerta (ej. 'auth', 'ids_core').
-        alert_message (str): Cuerpo del mensaje con el detalle del evento.
-        subject (str, optional): Asunto personalizado. Si es None, genera un formato estándar.
-        attachment_paths (list[str], optional): Lista de rutas a archivos de evidencia forense.
+        event_level (str): Alert severity level (e.g. 'CRITICAL', 'WARNING').
+        module_source (str): Module that raised the alert (e.g. 'auth', 'ids_core').
+        alert_message (str): Message body with the event details.
+        subject (str, optional): Custom subject. When None, a standard format is generated.
+        attachment_paths (list[str], optional): Paths to forensic-evidence files to attach.
 
     Returns:
-        bool: True si el correo fue transmitido exitosamente al servidor SMTP. False si hubo
-              errores de autenticación, red o protocolo (los fallos se registran en el L0 logger).
+        bool: True if the message was handed to the SMTP server successfully. False on
+              authentication, network, or protocol errors (failures land in the L0 logger).
 
     Raises:
-        None: Todas las excepciones son capturadas y gestionadas internamente.
+        None: Every exception is caught and handled internally.
     """
-    # Generar subject por defecto si no se provee
+    # Default subject when none is provided
     if not subject:
         subject = f"[{event_level.upper()}] IDS Alert - {module_source}"
 
-    # Supresión de duplicados (opt-in vía ALERT_DEDUP_WINDOW_SECONDS)
+    # Duplicate suppression (opt-in via ALERT_DEDUP_WINDOW_SECONDS)
     if _is_throttled(event_level, module_source, alert_message):
         logger.info(
             "Duplicate alert suppressed within dedup window: %s / %s",
@@ -70,12 +70,12 @@ def send_security_alert(
     sender_password = os.getenv("EMAIL_PASSWORD")
     receiver_email = os.getenv("ALERT_RECEIVER")
 
-    # Validación básica de credenciales
+    # Basic credential validation
     if not all([sender_email, sender_password, receiver_email]):
         logger.error("Missing SMTP credentials in environment. Alert aborted.")
         return False
 
-    # Twelve-Factor App: Configuración externalizada con defaults seguros
+    # Twelve-Factor App: externalized configuration with safe defaults
     smtp_host = os.getenv("SMTP_HOST", "smtp.gmail.com")
     smtp_port = int(os.getenv("SMTP_PORT", "587"))
 
@@ -85,17 +85,17 @@ def send_security_alert(
     msg["From"] = sender_email
     msg["To"] = receiver_email
 
-    # --- PROCESAMIENTO DE ADJUNTOS (Commit #2 y #3) ---
+    # --- Attachment processing ---
     for path_str in attachment_paths or []:
         path = Path(path_str)
 
         try:
-            # Validar existencia antes de consultar tamaño
+            # Check existence before querying size
             if not path.exists():
                 logger.warning("Attachment skipped: File not found at %s", path)
                 continue
 
-            # Validar tamaño
+            # Enforce the size limit
             if path.stat().st_size > MAX_ATTACHMENT_SIZE_BYTES:
                 logger.warning(
                     "Attachment skipped: Size exceeds limit (%s bytes) for %s",
@@ -104,15 +104,15 @@ def send_security_alert(
                 )
                 continue
 
-            # Detección de MIME type
+            # MIME type detection
             ctype, encoding = mimetypes.guess_type(str(path))
             if ctype is None or encoding is not None:
-                # Fallback estricto a octet-stream si es desconocido o está comprimido
+                # Strict octet-stream fallback for unknown or compressed types
                 ctype = "application/octet-stream"
 
             maintype, subtype = ctype.split("/", 1)
 
-            # Leer y adjuntar de forma segura
+            # Read and attach safely
             with open(path, "rb") as f:
                 file_data = f.read()
 
@@ -121,13 +121,13 @@ def send_security_alert(
             logger.warning("Attachment skipped: Permission denied reading %s", path)
             continue
         except Exception:
-            # Catch-all de lectura para no abortar el bucle por un archivo corrupto
+            # Read catch-all: one corrupt file must not abort the loop
             logger.exception("Attachment skipped: Unexpected error reading %s", path)
             continue
     # ---------------------------------------------
 
     try:
-        # Inicializar cliente SMTP con STARTTLS y timeout defensivo
+        # SMTP client with STARTTLS and a defensive timeout
         with smtplib.SMTP(smtp_host, smtp_port, timeout=30) as server:
             server.starttls()
             server.login(sender_email, sender_password)

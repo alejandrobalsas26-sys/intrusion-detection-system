@@ -1,7 +1,7 @@
--- Habilitar Write-Ahead Logging (persistente) para concurrencia multi-hilo
+-- Enable Write-Ahead Logging (persistent) for multi-thread concurrency
 PRAGMA journal_mode=WAL;
 
--- Tabla principal de eventos de auditoría
+-- Main audit-event table
 CREATE TABLE IF NOT EXISTS audit_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     timestamp REAL NOT NULL, -- Epoch Unix time (seconds) 
@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS audit_events (
     context_data TEXT
 );
 
--- Índices para optimización de consultas SIEM
+-- Indexes optimizing SIEM-style queries
 CREATE INDEX IF NOT EXISTS idx_time_level ON audit_events(timestamp, level);
 CREATE INDEX IF NOT EXISTS idx_module ON audit_events(module_source, timestamp);
 

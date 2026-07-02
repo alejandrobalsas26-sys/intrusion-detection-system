@@ -72,6 +72,12 @@ daily `python -m logs purge --vacuum` (retention). The **network sensor** runs
 on the host with administrator privileges and explicit consent
 (`NETWORK_MONITOR_CONSENT=true`); it is never auto-started without that gate.
 
+Alternatively, the orchestrator starts several components in one process:
+`python -m ids run --dashboard --correlator --production` (add `--sensor` from
+an elevated prompt). A component that cannot start safely — missing consent,
+privileges, or configuration — is reported and skipped instead of aborting the
+others. Run `python -m ids check` first for an import + configuration self-test.
+
 ## 3. Production hardening checklist
 
 - [ ] `python -m dashboard --check` reports **READY** (no `[x]` lines)

@@ -19,7 +19,7 @@ def handle_enroll(args):
         print(f"\n[+] User '{args.username}' enrolled successfully.\n")
         print("Scan this QR code with your authenticator app:")
 
-        # Generar QR para la terminal
+        # Render the QR code in the terminal
         qr = qrcode.QRCode(version=1, box_size=1, border=2)
         qr.add_data(uri)
         qr.make(fit=True)

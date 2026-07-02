@@ -23,8 +23,8 @@ and a common alerting channel. Each layer can run standalone (`python -m <pkg>`)
         ┌───────┴──────┐ ┌─────┴──────┐ ┌─────┴──────┐ ┌─────┴────────┐
         │ network/ (L2)│ │ fim/       │ │ auth/ (L7) │ │ detection/   │
         │ scapy sniffer│ │ SHA-256    │ │ TOTP MFA   │ │ correlation  │
-        │ ARP + SYN    │ │ baselines  │ │ recovery   │ │ scoring      │
-        │ detectors    │ │ integrity  │ │ backoff    │ │ MITRE map    │
+        │ ARP SYN ICMP │ │ baselines  │ │ recovery   │ │ scoring      │
+        │ DNS detectors│ │ integrity  │ │ backoff    │ │ MITRE map    │
         └───────┬──────┘ └─────┬──────┘ └─────┬──────┘ │ dedup        │
                 │              │              │        └─────┬────────┘
                 └──────────────┴──────┬───────┴──────────────┘
@@ -65,6 +65,12 @@ plug-ins implementing `process_packet(pkt) -> DetectionEvent | None`:
 
 * `ArpDetector` — MAC flapping per IP within a sliding window (lazy eviction).
 * `SynDetector` — distinct destination ports per source IP, O(1) amortized.
+* `IcmpSweepDetector` — one source pinging many distinct hosts (ping sweep).
+* `DnsWatchlistDetector` — DNS queries matching a local IOC domain watchlist.
+
+`network/replay.py` feeds a PCAP file through the same detector stack offline
+(`python -m network.replay <file.pcap>`), so detections can be exercised
+without privileges or live traffic; synthetic captures live in `samples/`.
 
 ### `auth/` — L7 identity & MFA
 TOTP secrets encrypted at rest (Fernet), recovery codes hashed with scrypt and
@@ -72,13 +78,15 @@ per-code salts, token replay protection via SHA-256 fingerprints with a unique
 index as a race-condition backstop, exponential backoff on failures
 (sleep-based legacy mode, or non-blocking `reject` mode for web contexts),
 anti-enumeration responses, and soft-delete revocation. CLI: enroll (QR),
-revoke, list.
+revoke, list, set-role.
 
 ### `fim/` — file integrity monitoring
 Config-driven SHA-256 baselines; `check_integrity()` raises MODIFIED/DELETED
-events to the DB, audit log, and email.
+events to the DB, audit log, and email. Directory watches additionally raise
+CREATED events for newly planted files (each new file alerts once, then folds
+into the baseline).
 
-### `detection/` — detection engineering core (new)
+### `detection/` — detection engineering core
 * `normalize.py` — converts `DetectionEvent`/`AuthEvent`/`FimEvent`/raw
   `audit_events` rows into one canonical `NormalizedEvent` envelope.
 * `mitre.py` — MITRE ATT&CK technique mapping per event type.
@@ -96,6 +104,8 @@ events to the DB, audit log, and email.
   keywords). Pure stdlib; CLI `python -m detection.phishing <url>`.
 * `playbook.py` — per-rule analyst guidance: tactic, confidence, and concrete
   remediation steps, applied as read-time enrichment on incidents.
+* `replay.py` — replays JSONL event files into the audit store for offline
+  detection engineering (`python -m detection.replay <events.jsonl> --sweep`).
 * `python -m detection` — one-shot or interval correlation sweeps.
 
 ### `dashboard/` — L8 read-only SOC console
@@ -106,12 +116,24 @@ session fixation mitigation, 15-minute sessions, fixed-window login rate
 limiting, RBAC decorator over the existing `users.role` column, `/healthz`,
 `/readyz`, Prometheus `/metrics`, bounded SSE stream, and `/api/incidents`.
 
-### `ai/` — local LLM assistance (new, optional)
+### `ai/` — local LLM assistance (optional)
 Provider-agnostic client for OpenAI-compatible local endpoints (Ollama,
 llama.cpp, vLLM). Summarizes alerts/incidents for analysts. Disabled unless
 `AI_BACKEND` is configured; all failures degrade to deterministic non-LLM
 summaries. No event data ever leaves the host unless the operator points the
 endpoint elsewhere.
+
+### `demo/` — reproducible attack chain
+`run_demo()` writes a synthetic recon → brute force → password spray → login →
+FIM-tampering timeline into the audit store (the FIM stage modifies real files
+in a scratch directory) and sweeps it into incidents. No privileges, network
+access, or SMTP required — e-mail alerts are suppressed by default.
+
+### `ids/` — orchestrator CLI
+`python -m ids check` (import + configuration self-test), `python -m ids demo`
+(runs the demo chain), and `python -m ids run --dashboard --correlator
+--sensor` (starts the selected components on supervised daemon threads;
+anything that cannot start safely is warned about and skipped).
 
 ## Data model
 

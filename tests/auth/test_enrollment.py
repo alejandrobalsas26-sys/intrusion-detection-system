@@ -1,5 +1,6 @@
 import sqlite3
 import unittest
+from unittest.mock import patch
 
 from auth.core import UserAlreadyExistsError, enroll_user
 from auth.crypto import crypto
@@ -22,6 +23,25 @@ class TestAuthEnrollment(unittest.TestCase):
             cursor = conn.cursor()
             cursor.execute("SELECT id FROM users WHERE username = 'analyst_1'")
             self.assertIsNotNone(cursor.fetchone())
+
+    def test_recovery_codes_count_env_override(self):
+        """MFA_RECOVERY_CODES_COUNT controls how many codes are issued."""
+        with patch.dict("os.environ", {"MFA_RECOVERY_CODES_COUNT": "5"}):
+            _, codes = enroll_user("analyst_env_count")
+        self.assertEqual(len(codes), 5)
+        with sqlite3.connect(DB_PATH) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT COUNT(*) FROM recovery_codes rc JOIN users u ON u.id = rc.user_id"
+                " WHERE u.username = 'analyst_env_count'"
+            )
+            self.assertEqual(cursor.fetchone()[0], 5)
+
+    def test_recovery_codes_count_invalid_falls_back_to_default(self):
+        """A non-numeric MFA_RECOVERY_CODES_COUNT must not break enrollment."""
+        with patch.dict("os.environ", {"MFA_RECOVERY_CODES_COUNT": "plenty"}):
+            _, codes = enroll_user("analyst_bad_count")
+        self.assertEqual(len(codes), 10)
 
     def test_duplicate_user_raises_error(self):
         """Should not allow two users with the same name."""
