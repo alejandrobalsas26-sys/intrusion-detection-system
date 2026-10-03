@@ -23,6 +23,7 @@ import argparse
 from dataclasses import dataclass, field
 
 from network.detectors import DetectionEvent, build_default_detectors
+from network.dispatch import log_detection
 
 
 @dataclass
@@ -68,6 +69,7 @@ def replay_pcap(
             if not event:
                 continue
             stats.events.append(event)
+            log_detection(event, logger)
             if alert:
                 from alerts.email_alert import send_security_alert
 
@@ -76,13 +78,6 @@ def replay_pcap(
                     module_source=event.module_source,
                     alert_message=event.message,
                 )
-            log_func = getattr(logger, event.level.lower(), logger.info)
-            # Same envelope as the live sensor so downstream parsing is identical;
-            # context rides along so normalization gets structured fields too.
-            log_func(
-                f"DetectionEvent: {event.level} from {event.detector_name} - {event.message}",
-                extra={"context": dict(event.context)},
-            )
     return stats
 
 

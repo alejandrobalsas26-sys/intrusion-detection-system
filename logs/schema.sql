@@ -28,3 +28,11 @@ CREATE TABLE IF NOT EXISTS audit_checkpoints (
     chain_hash TEXT NOT NULL,          -- running hash after this segment
     prev_chain_hash TEXT NOT NULL      -- chain_hash of the previous seal (or GENESIS)
 );
+
+-- Retention keeps the fingerprints of sealed rows it removes. Verification can
+-- still reconstruct the original chain and detect changes to surviving rows.
+CREATE TABLE IF NOT EXISTS audit_retention_hashes (
+    event_id INTEGER PRIMARY KEY,
+    fingerprint TEXT NOT NULL,
+    purged_at REAL NOT NULL
+);

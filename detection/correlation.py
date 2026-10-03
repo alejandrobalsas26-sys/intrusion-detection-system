@@ -41,12 +41,8 @@ CHAIN_WINDOW = int(os.getenv("CORRELATION_CHAIN_WINDOW_SECONDS", "1800"))
 # Password spray: distinct accounts attacked from a low-and-slow campaign that
 # stays under the per-user brute-force threshold. Conservative default (5
 # distinct users in 5 min) keeps false positives low on busy multi-user hosts.
-PASSWORD_SPRAY_USER_THRESHOLD = int(
-    os.getenv("CORRELATION_PASSWORD_SPRAY_USER_THRESHOLD", "5")
-)
-PASSWORD_SPRAY_WINDOW = int(
-    os.getenv("CORRELATION_PASSWORD_SPRAY_WINDOW_SECONDS", "300")
-)
+PASSWORD_SPRAY_USER_THRESHOLD = int(os.getenv("CORRELATION_PASSWORD_SPRAY_USER_THRESHOLD", "5"))
+PASSWORD_SPRAY_WINDOW = int(os.getenv("CORRELATION_PASSWORD_SPRAY_WINDOW_SECONDS", "300"))
 # Successful authentication immediately following a run of failures for the same
 # user — the signature of a brute force that finally landed, or a credential
 # that was just compromised. Conservative default mirrors the brute-force count.
@@ -68,6 +64,7 @@ class IncidentCandidate:
     # (e.g. password spraying is a property of the *pattern*, not one failure).
     # Defaults empty, so existing rules are unaffected.
     extra_techniques: list[str] = field(default_factory=list)
+    extra_entities: list[str] = field(default_factory=list)
 
     @property
     def severity(self) -> str:
@@ -80,6 +77,9 @@ class IncidentCandidate:
         for e in self.events:
             if e.entity and e.entity not in seen:
                 seen.append(e.entity)
+        for entity in self.extra_entities:
+            if entity not in seen:
+                seen.append(entity)
         return seen
 
     @property
@@ -154,6 +154,16 @@ def rule_replay_attack(events: list[NormalizedEvent]) -> list[IncidentCandidate]
     ]
 
 
+def _same_host(first: NormalizedEvent, second: NormalizedEvent) -> bool:
+    host = first.context.get("host_id")
+    return isinstance(host, str) and bool(host) and host == second.context.get("host_id")
+
+
+def _source_ip(event: NormalizedEvent) -> str | None:
+    value = event.context.get("source_ip") or event.context.get("ip_address")
+    return value if isinstance(value, str) and value else None
+
+
 def rule_recon_then_auth(
     events: list[NormalizedEvent], window_seconds: int = CHAIN_WINDOW
 ) -> list[IncidentCandidate]:
@@ -163,7 +173,12 @@ def rule_recon_then_auth(
     candidates = []
     for r in recon:
         followers = [
-            a for a in auth_failures if 0 <= a.timestamp - r.timestamp <= window_seconds
+            a
+            for a in auth_failures
+            if 0 <= a.timestamp - r.timestamp <= window_seconds
+            and _same_host(r, a)
+            and _source_ip(r) is not None
+            and _source_ip(r) == _source_ip(a)
         ]
         if followers:
             chain = [r] + followers
@@ -185,14 +200,14 @@ def rule_network_then_fim(
     events: list[NormalizedEvent], window_seconds: int = CHAIN_WINDOW
 ) -> list[IncidentCandidate]:
     """Network attack followed by file tampering: likely successful intrusion."""
-    network_critical = [
-        e for e in events if e.category == "network" and e.severity == "CRITICAL"
-    ]
+    network_critical = [e for e in events if e.category == "network" and e.severity == "CRITICAL"]
     fim_events = [e for e in events if e.category == "fim"]
     candidates = []
     for n in network_critical:
         tampering = [
-            f for f in fim_events if 0 <= f.timestamp - n.timestamp <= window_seconds
+            f
+            for f in fim_events
+            if 0 <= f.timestamp - n.timestamp <= window_seconds and _same_host(n, f)
         ]
         if tampering:
             candidates.append(
@@ -221,11 +236,7 @@ def rule_password_spray(
     trying one or few passwords across a breadth of accounts. The signal is the
     number of distinct targeted users, not the per-user failure count.
     """
-    failures = [
-        e
-        for e in events
-        if e.event_name in ("AUTH_FAILURE", "RATE_LIMITED") and e.entity
-    ]
+    failures = [e for e in events if e.event_name in ("AUTH_FAILURE", "RATE_LIMITED") and e.entity]
     if len({f.entity for f in failures}) < user_threshold:
         return []  # cheap early exit before the O(n^2) anchor scan
 
@@ -285,9 +296,7 @@ def rule_auth_success_after_failures(
             candidates.append(
                 IncidentCandidate(
                     rule_name="auth_success_after_failures",
-                    title=(
-                        f"Successful login after {len(prior)} failures for user '{s.entity}'"
-                    ),
+                    title=(f"Successful login after {len(prior)} failures for user '{s.entity}'"),
                     summary=(
                         f"User '{s.entity}' authenticated successfully after {len(prior)} "
                         f"failed attempt(s) within {window_seconds}s — possible successful "
@@ -316,12 +325,18 @@ def rule_ioc_match(
 
     matched: dict[str, list] = {}  # entity -> [indicator, [events]]
     for e in events:
-        if not e.entity:
-            continue
-        indicator = ti.match(e.entity)
-        if indicator:
-            slot = matched.setdefault(e.entity, [indicator, []])
-            slot[1].append(e)
+        entities = (
+            e.entity,
+            e.context.get("domain"),
+            e.context.get("source_ip"),
+            e.context.get("ip_address"),
+        )
+        entities = dict.fromkeys(value for value in entities if isinstance(value, str) and value)
+        for entity in entities:
+            indicator = ti.match(entity)
+            if indicator:
+                slot = matched.setdefault(entity, [indicator, []])
+                slot[1].append(e)
 
     return [
         IncidentCandidate(
@@ -333,6 +348,7 @@ def rule_ioc_match(
                 "investigate the source immediately."
             ),
             events=evts,
+            extra_entities=[entity],
         )
         for entity, (indicator, evts) in matched.items()
     ]

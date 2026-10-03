@@ -4,17 +4,17 @@
 
 | Surface | Threats | Controls |
 |---------|---------|----------|
-| Dashboard login | credential stuffing, TOTP brute force, enumeration, CSRF, session theft | TOTP MFA; per-IP HTTP rate limit (429); non-blocking auth backoff (`reject` mode); identical failure messages (anti-enumeration); CSRF tokens; HttpOnly/SameSite=Strict cookies; 15-min sessions; session-fixation reset at login; RBAC roles bound at login |
+| Dashboard login | credential stuffing, TOTP brute force, enumeration, CSRF, session theft | TOTP authentication (one possession factor); per-IP HTTP rate limit (429); non-blocking auth backoff (`reject` mode); identical failure messages (anti-enumeration); CSRF tokens; HttpOnly/SameSite=Strict cookies; absolute 15-min sessions; session-fixation reset at login; active status and RBAC role rechecked per request |
 | Dashboard data layer | SQLi, tampering via web tier | parameterized queries only; engine-enforced read-only connections (`file:...?mode=ro`) |
 | Browser | XSS, clickjacking, mixed content | strict CSP (allow-listed CDNs), `frame-ancestors 'none'`, X-Frame-Options DENY, HSTS + HTTPS redirect in production (Talisman) |
 | TOTP secrets | DB theft | Fernet (AES-128-CBC + HMAC) encryption at rest; key only in env |
 | Recovery codes | DB theft, replay | scrypt (n=16384) with per-code salts; single-use (deleted on consume); constant-time compare |
-| Token replay | reuse within TOTP window | SHA-256 fingerprint log + 90 s window check + unique index as race backstop |
+| Token replay | reuse within TOTP window | atomic UNIQUE(user_id, time_step) consumption of the verified TOTP interval; invalid attempts cannot reserve codes |
 | Auth brute force | online guessing | exponential backoff (sleep or reject mode); failed-attempt telemetry; CRITICAL alerts past threshold |
-| SMTP alerting | mailbox flooding, credential leakage | STARTTLS; app passwords; optional duplicate-suppression window |
+| SMTP alerting | mailbox flooding, credential leakage | STARTTLS with certificate/hostname verification; app passwords; optional duplicate-suppression window |
 | Network capture | malicious packets crashing sensor | per-detector exception isolation; no eval/exec of packet data; BPF pre-filter |
 | Sensor abuse | unauthorized sniffing | explicit consent env gate + OS privilege check |
-| SSE | worker exhaustion | auth required; bounded stream lifetime; heartbeats |
+| SSE | worker exhaustion | auth required; absolute session expiry and active user rechecked while streaming; bounded lifetime; heartbeats |
 | AI layer | data exfiltration | disabled by default; local endpoint only unless operator reconfigures; scheme validation; hard failure isolation |
 | Audit log tampering | post-hoc edit/delete of forensic records | optional hash-chain sealing (`python -m logs seal` / `verify-chain`); off-box anchor for tamper-proofing |
 | Known-bad infrastructure | traffic to/from flagged IPs or domains | optional local IOC watchlists (`detection/intel.py`); no cloud/API dependency |
@@ -53,9 +53,10 @@ reproducible; review diffs when bumping pins.
 
 ## Known limitations (accepted, documented)
 
-* Signed-cookie sessions can't be revoked server-side before expiry
-  (15-minute lifetime bounds the exposure); server-side sessions are the
-  Phase 3 fix.
+* Logout clears the browser cookie but cannot revoke a stolen copy individually.
+  Absolute 15-minute expiry bounds its lifetime; user revocation disables all of
+  that user's cookies on the next protected request (SSE checks each poll).
+  Server-side sessions remain the Phase 3 fix for individual logout revocation.
 * FIM has a TOCTOU window between hash computations (accepted MVP debt).
 * `/metrics` is unauthenticated by default (aggregate counters only, for
   probe/scraper compatibility); set `METRICS_TOKEN` to require a bearer token,
@@ -66,7 +67,7 @@ reproducible; review diffs when bumping pins.
   separate processes, so the limiter is global within it. Front with a
   reverse-proxy limit (e.g. nginx `limit_req`) for strict multi-instance guarantees.
 * Audit sealing (`logs/integrity.py`) is tamper-*evident*, not tamper-*proof*:
-  an attacker with write access to both `audit_events` and `audit_checkpoints`
+  an attacker with write access to `audit_events`, `audit_retention_hashes`, and `audit_checkpoints`
   can rewrite a consistent chain. Export the latest `chain_hash` anchor off-box
   to close that gap.
 
@@ -74,3 +75,8 @@ reproducible; review diffs when bumping pins.
 
 This is a homelab/research project. Report issues via the repository issue
 tracker; do not file public exploits for unreleased fixes.
+
+Attack-chain correlation establishes a shared host (and recon/auth source IP),
+not causation. Validate the linked activity during triage. CLI authentication
+does not infer a remote source IP; those events cannot form recon/auth chains
+unless their source is supplied explicitly.

@@ -1,10 +1,13 @@
 import hashlib
 import hmac
+import math
 import os
 import secrets
+import socket
 import sqlite3
 import string
 import time
+from contextlib import closing
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -72,7 +75,9 @@ def _backoff_mode() -> str:
     return os.getenv("MFA_BACKOFF_MODE", "sleep").strip().lower()
 
 
-def _enforce_backoff(username: str, user_id: int) -> tuple[int, int, "AuthEvent | None"]:
+def _enforce_backoff(
+    username: str, user_id: int, context: dict | None = None
+) -> tuple[int, int, "AuthEvent | None"]:
     """Applies the configured backoff strategy for a user with recent failures.
 
     Returns (backoff_seconds, failure_count, rejection_event). When
@@ -83,6 +88,16 @@ def _enforce_backoff(username: str, user_id: int) -> tuple[int, int, "AuthEvent 
         return backoff_seconds, failure_count, None
 
     if _backoff_mode() == "reject":
+        with closing(sqlite3.connect(DB_PATH)) as conn:
+            last_failure = conn.execute(
+                "SELECT MAX(CAST(strftime('%s', timestamp) AS REAL)) "
+                "FROM auth_attempts WHERE user_id = ? AND success = 0",
+                (user_id,),
+            ).fetchone()[0]
+        remaining = (last_failure or 0) + backoff_seconds - time.time()
+        if remaining <= 0:
+            return 0, failure_count, None
+        backoff_seconds = math.ceil(remaining)
         return (
             backoff_seconds,
             failure_count,
@@ -92,7 +107,7 @@ def _enforce_backoff(username: str, user_id: int) -> tuple[int, int, "AuthEvent 
                     event_name="RATE_LIMITED",
                     message=f"Authentication rate limited for user '{username}'.",
                     context=_build_event_context(
-                        "RATE_LIMITED", backoff_seconds, failure_count
+                        "RATE_LIMITED", backoff_seconds, failure_count, context
                     ),
                 )
             ),
@@ -105,7 +120,7 @@ def _enforce_backoff(username: str, user_id: int) -> tuple[int, int, "AuthEvent 
 def _bootstrap_auth_db():
     """Ensures the database schema exists."""
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    with sqlite3.connect(DB_PATH) as conn:
+    with closing(sqlite3.connect(DB_PATH)) as conn:
         # 1. Load standard schema
         schema_path = Path(__file__).parent / "schema.sql"
         if schema_path.exists():
@@ -113,11 +128,16 @@ def _bootstrap_auth_db():
                 conn.executescript(s.read())
 
         # 2. MIGRATION: Add is_active to existing databases
+        conn.execute("BEGIN IMMEDIATE")
         cursor = conn.cursor()
         cursor.execute("SELECT COUNT(*) FROM pragma_table_info('users') WHERE name='is_active'")
         if cursor.fetchone()[0] == 0:
             cursor.execute("ALTER TABLE users ADD COLUMN is_active INTEGER DEFAULT 1")
-            logger.info("Migration applied: added is_active column to users table")
+        cursor.execute(
+            "SELECT COUNT(*) FROM pragma_table_info('auth_attempts') WHERE name='totp_step'"
+        )
+        if cursor.fetchone()[0] == 0:
+            cursor.execute("ALTER TABLE auth_attempts ADD COLUMN totp_step INTEGER")
         conn.commit()
 
 
@@ -141,7 +161,7 @@ def _recovery_fingerprint(user_id: int, code: str) -> str:
 
 def _calculate_backoff_delay(user_id: int) -> tuple[int, int]:
     """Calculates exponential delay based on recent failed attempts."""
-    with sqlite3.connect(DB_PATH) as conn:
+    with closing(sqlite3.connect(DB_PATH)) as conn:
         cursor = conn.cursor()
         cursor.execute(
             """
@@ -178,6 +198,7 @@ def _dispatch_event(event: AuthEvent) -> AuthEvent:
     """Routes AuthEvent to L0 (logger) and conditionally to L1 (alerts).
     Returns the event unchanged for caller consumption. Safe and idempotent.
     """
+    event.context.setdefault("host_id", socket.gethostname())
     try:
         # L0: Always log via dynamic level method
         log_method = getattr(logger, event.level.lower(), logger.info)
@@ -208,7 +229,7 @@ def enroll_user(username: str) -> tuple[str, list[str]]:
         code = "".join(secrets.choice(string.ascii_uppercase + string.digits) for _ in range(8))
         recovery_codes.append(code)
 
-    with sqlite3.connect(DB_PATH) as conn:
+    with closing(sqlite3.connect(DB_PATH)) as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT id FROM users WHERE username = ?", (username,))
         if cursor.fetchone():
@@ -243,143 +264,123 @@ def enroll_user(username: str) -> tuple[str, list[str]]:
     return uri, recovery_codes
 
 
-def verify_token(username: str, token: str) -> AuthEvent:
-    """Verifies a TOTP token with replay protection and anti-enumeration.
-
-    Structured in three phases so that a sleep-mode backoff delay is NEVER
-    served while a SQLite connection is held open:
-      1. identity resolution (short-lived read connection)
-      2. backoff enforcement (opens/closes its own connection, then sleeps)
-      3. replay check + verification + attempt record (single write connection)
-    """
+def verify_token(username: str, token: str, *, source_ip: str | None = None) -> AuthEvent:
+    """Consume a verified TOTP interval atomically; never reserve invalid codes."""
     _bootstrap_auth_db()
 
-    # Phase 1 — identity resolution.
-    with sqlite3.connect(DB_PATH) as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT id, encrypted_secret, is_active FROM users WHERE username = ?", (username,)
-        )
-        user_row = cursor.fetchone()
-
-    if not user_row:
+    def emit(name, level, reason, backoff=0, failures=0, extra=None):
+        context = {"username": username}
+        if source_ip:
+            context["source_ip"] = source_ip
+        context.update(extra or {})
+        messages = {
+            "AUTH_SUCCESS": f"User '{username}' authenticated successfully.",
+            "REPLAY_ATTACK": f"Replay attack detected for user '{username}'.",
+            "CRYPTO_ERROR": f"Secret decryption failed for user '{username}'.",
+            "SYSTEM_ERROR": f"Internal authentication error for user '{username}'.",
+        }
         return _dispatch_event(
             AuthEvent(
-                level="WARNING",
-                event_name="AUTH_FAILURE",
-                message=f"Authentication failed for user '{username}'.",
-                context=_build_event_context("USER_NOT_FOUND"),
+                level=level,
+                event_name=name,
+                message=messages.get(name, f"Authentication failed for user '{username}'."),
+                context=_build_event_context(reason, backoff, failures, context),
             )
         )
 
-    user_id, encrypted_secret, is_active = user_row
+    with closing(sqlite3.connect(DB_PATH)) as conn:
+        row = conn.execute(
+            "SELECT id, encrypted_secret, is_active FROM users WHERE username = ?",
+            (username,),
+        ).fetchone()
+    if not row:
+        return emit("AUTH_FAILURE", "WARNING", "USER_NOT_FOUND")
+    user_id, encrypted_secret, active = row
+    if not active:
+        return emit("AUTH_FAILURE", "WARNING", "USER_REVOKED")
 
-    if is_active == 0:
-        return _dispatch_event(
-            AuthEvent(
-                level="WARNING",
-                event_name="AUTH_FAILURE",
-                message=f"Authentication failed for user '{username}'.",
-                context=_build_event_context("USER_REVOKED"),
-            )
-        )
-
-    # Phase 2 — backoff. No connection is held here, so a sleep-mode delay
-    # cannot pin a database handle or block other writers.
-    backoff_seconds, failure_count, rejection = _enforce_backoff(username, user_id)
+    backoff, failures, rejection = _enforce_backoff(
+        username, user_id, {"username": username, "source_ip": source_ip}
+    )
     if rejection is not None:
         return rejection
-
-    # Phase 3 — replay check, cryptographic verification, attempt record.
-    with sqlite3.connect(DB_PATH) as conn:
-        cursor = conn.cursor()
-        fingerprint = _token_fingerprint(user_id, token)
-        cursor.execute(
-            """
-            SELECT id FROM auth_attempts
-            WHERE user_id = ? AND token_fingerprint = ?
-            AND timestamp > datetime('now', '-90 seconds')
-        """,
-            (user_id, fingerprint),
+    now = time.time()
+    fingerprint = _token_fingerprint(user_id, token)
+    try:
+        totp = pyotp.TOTP(crypto.decrypt(encrypted_secret))
+        current_step = int(now // totp.interval)
+        step = next(
+            (
+                counter
+                for counter in (current_step, current_step - 1, current_step + 1)
+                if counter >= 0
+                and hmac.compare_digest(str(token), totp.at(counter * totp.interval))
+            ),
+            None,
+        )
+    except InvalidToken:
+        return emit("CRYPTO_ERROR", "CRITICAL", "fernet_invalid_token", backoff, failures)
+    except Exception as exc:
+        return emit(
+            "SYSTEM_ERROR",
+            "ERROR",
+            "unknown_crypto_error",
+            backoff,
+            failures,
+            {"exception_type": type(exc).__name__},
         )
 
-        if cursor.fetchone():
-            return _dispatch_event(
-                AuthEvent(
-                    level="CRITICAL",
-                    event_name="REPLAY_ATTACK",
-                    message=f"Replay attack detected for user '{username}'.",
-                    context=_build_event_context(
-                        "TOKEN_REUSED_WINDOW", backoff_seconds, failure_count
-                    ),
-                )
-            )
-
+    replay = None
+    with closing(sqlite3.connect(DB_PATH)) as conn:
         try:
-            raw_secret = crypto.decrypt(encrypted_secret)
-            totp = pyotp.TOTP(raw_secret)
-            is_valid = totp.verify(token, valid_window=1)
-        except InvalidToken:
-            return _dispatch_event(
-                AuthEvent(
-                    level="CRITICAL",
-                    event_name="CRYPTO_ERROR",
-                    message=f"Secret decryption failed for user '{username}'.",
-                    context=_build_event_context(
-                        "fernet_invalid_token", backoff_seconds, failure_count
-                    ),
+            conn.execute("BEGIN IMMEDIATE")
+            active = conn.execute("SELECT is_active FROM users WHERE id = ?", (user_id,)).fetchone()
+            if not active or not active[0]:
+                conn.rollback()
+                return emit("AUTH_FAILURE", "WARNING", "USER_REVOKED", backoff, failures)
+            # Compatibility with successful attempts recorded just before migration.
+            legacy = (
+                conn.execute(
+                    "SELECT 1 FROM auth_attempts WHERE user_id = ? AND success = 1 "
+                    "AND token_fingerprint = ? AND totp_step IS NULL "
+                    "AND timestamp > datetime('now', '-90 seconds') LIMIT 1",
+                    (user_id, fingerprint),
+                ).fetchone()
+                if step is not None
+                else None
+            )
+            consumed = (
+                conn.execute(
+                    "SELECT 1 FROM totp_consumptions WHERE user_id = ? AND time_step = ?",
+                    (user_id, step),
+                ).fetchone()
+                if step is not None
+                else None
+            )
+            if legacy or consumed:
+                replay = "TOKEN_REUSED_WINDOW"
+                conn.rollback()
+            else:
+                if step is not None:
+                    conn.execute(
+                        "INSERT INTO totp_consumptions (user_id, time_step, consumed_at) "
+                        "VALUES (?, ?, ?)",
+                        (user_id, step, now),
+                    )
+                conn.execute(
+                    "INSERT INTO auth_attempts (user_id, success, token_fingerprint, totp_step) "
+                    "VALUES (?, ?, ?, ?)",
+                    (user_id, int(step is not None), fingerprint, step),
                 )
-            )
-        except Exception as e:
-            extra = {"exception_type": type(e).__name__, "exception_repr": repr(e)}
-            return _dispatch_event(
-                AuthEvent(
-                    level="ERROR",
-                    event_name="SYSTEM_ERROR",
-                    message=f"Internal authentication error for user '{username}'.",
-                    context=_build_event_context(
-                        "unknown_crypto_error", backoff_seconds, failure_count, extra
-                    ),
-                )
-            )
-
-        try:
-            cursor.execute(
-                "INSERT INTO auth_attempts (user_id, success, token_fingerprint) VALUES (?, ?, ?)",
-                (user_id, 1 if is_valid else 0, fingerprint),
-            )
-            conn.commit()
+                conn.commit()
         except sqlite3.IntegrityError:
             conn.rollback()
-            return _dispatch_event(
-                AuthEvent(
-                    level="CRITICAL",
-                    event_name="REPLAY_ATTACK",
-                    message=f"Replay attack detected for user '{username}'.",
-                    context=_build_event_context(
-                        "TOKEN_REUSED_RACE_CONDITION", backoff_seconds, failure_count
-                    ),
-                )
-            )
-
-        if is_valid:
-            return _dispatch_event(
-                AuthEvent(
-                    level="INFO",
-                    event_name="AUTH_SUCCESS",
-                    message=f"User '{username}' authenticated successfully.",
-                    context=_build_event_context("VALID_TOKEN", backoff_seconds, failure_count),
-                )
-            )
-
-        return _dispatch_event(
-            AuthEvent(
-                level="WARNING",
-                event_name="AUTH_FAILURE",
-                message=f"Authentication failed for user '{username}'.",
-                context=_build_event_context("INVALID_TOKEN", backoff_seconds, failure_count),
-            )
-        )
+            replay = "TOKEN_REUSED_RACE_CONDITION"
+    if replay:
+        return emit("REPLAY_ATTACK", "CRITICAL", replay, backoff, failures)
+    if step is not None:
+        return emit("AUTH_SUCCESS", "INFO", "VALID_TOKEN", backoff, failures)
+    return emit("AUTH_FAILURE", "WARNING", "INVALID_TOKEN", backoff, failures)
 
 
 def use_recovery_code(username: str, code: str) -> AuthEvent:
@@ -391,7 +392,7 @@ def use_recovery_code(username: str, code: str) -> AuthEvent:
     _bootstrap_auth_db()
 
     # Phase 1 — identity resolution.
-    with sqlite3.connect(DB_PATH) as conn:
+    with closing(sqlite3.connect(DB_PATH)) as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT id, is_active FROM users WHERE username = ?", (username,))
         user_row = cursor.fetchone()
@@ -424,7 +425,7 @@ def use_recovery_code(username: str, code: str) -> AuthEvent:
         return rejection
 
     # Phase 3 — replay check, code match, single-use consumption.
-    with sqlite3.connect(DB_PATH) as conn:
+    with closing(sqlite3.connect(DB_PATH)) as conn:
         cursor = conn.cursor()
         fingerprint = _recovery_fingerprint(user_id, code)
         cursor.execute(
@@ -463,6 +464,8 @@ def use_recovery_code(username: str, code: str) -> AuthEvent:
         try:
             if matched_code_id:
                 cursor.execute("DELETE FROM recovery_codes WHERE id = ?", (matched_code_id,))
+                if cursor.rowcount != 1:
+                    raise sqlite3.IntegrityError("Recovery code already consumed")
                 cursor.execute(
                     """
                     INSERT INTO auth_attempts (user_id, success, token_fingerprint)
@@ -518,7 +521,7 @@ def use_recovery_code(username: str, code: str) -> AuthEvent:
 def revoke_user(username: str) -> tuple[bool, str]:
     """Soft-delete a user. Returns (success, message_code)."""
     _bootstrap_auth_db()
-    with sqlite3.connect(DB_PATH) as conn:
+    with closing(sqlite3.connect(DB_PATH)) as conn:
         cursor = conn.cursor()
 
         cursor.execute("SELECT id, is_active FROM users WHERE username = ?", (username,))
@@ -552,11 +555,9 @@ def get_user_role(username: str) -> str | None:
     'admin' grants administrative views in the dashboard).
     """
     _bootstrap_auth_db()
-    with sqlite3.connect(DB_PATH) as conn:
+    with closing(sqlite3.connect(DB_PATH)) as conn:
         cursor = conn.cursor()
-        cursor.execute(
-            "SELECT role FROM users WHERE username = ? AND is_active = 1", (username,)
-        )
+        cursor.execute("SELECT role FROM users WHERE username = ? AND is_active = 1", (username,))
         row = cursor.fetchone()
         return row[0] if row else None
 
@@ -568,7 +569,7 @@ def set_user_role(username: str, role: str) -> bool:
         raise ValueError(f"Invalid role '{role}'. Valid roles: {sorted(valid_roles)}")
 
     _bootstrap_auth_db()
-    with sqlite3.connect(DB_PATH) as conn:
+    with closing(sqlite3.connect(DB_PATH)) as conn:
         cursor = conn.cursor()
         cursor.execute("UPDATE users SET role = ? WHERE username = ?", (role, username))
         conn.commit()
@@ -589,7 +590,7 @@ def set_user_role(username: str, role: str) -> bool:
 def list_users() -> list[dict]:
     """Returns list of enrolled users with their metadata."""
     _bootstrap_auth_db()
-    with sqlite3.connect(DB_PATH) as conn:
+    with closing(sqlite3.connect(DB_PATH)) as conn:
         cursor = conn.cursor()
         cursor.execute("""
             SELECT username, created_at, role, is_active

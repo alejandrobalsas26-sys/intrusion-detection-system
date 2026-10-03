@@ -11,5 +11,6 @@ def setup_test_db(conn: sqlite3.Connection):
     # Clean state for isolated tests
     conn.execute("DELETE FROM recovery_codes")
     conn.execute("DELETE FROM auth_attempts")
+    conn.execute("DELETE FROM totp_consumptions")
     conn.execute("DELETE FROM users")
     conn.commit()

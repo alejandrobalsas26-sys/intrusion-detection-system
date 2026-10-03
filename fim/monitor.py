@@ -1,8 +1,10 @@
 import hashlib
 import json
 import os
+import socket
 import sqlite3
 import time
+from contextlib import closing
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -31,11 +33,12 @@ class FimEvent:
 def _bootstrap_fim_db() -> None:
     """Ensures the FIM schema exists regardless of invocation order."""
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    with sqlite3.connect(DB_PATH) as conn:
+    with closing(sqlite3.connect(DB_PATH)) as conn:
         schema_path = Path(__file__).parent / "schema.sql"
         if schema_path.exists():
             with open(schema_path, encoding="utf-8") as s:
                 conn.executescript(s.read())
+            conn.executescript((Path(BASE_DIR) / "logs/schema.sql").read_text(encoding="utf-8"))
         else:
             logger.error(f"Schema file not found at {schema_path}")
 
@@ -65,21 +68,11 @@ def _iter_directory_files(dirpath: str, recursive: bool) -> list[str]:
     return sorted(str(p) for p in root.glob(pattern) if p.is_file())
 
 
-def _baseline_file(cursor: sqlite3.Cursor, filepath: str) -> bool:
-    """Hashes and upserts one file baseline. Returns True on success."""
-    current_hash = calculate_sha256(filepath)
-    if not current_hash:
-        logger.warning(f"Could not hash {filepath} (Does the file exist?)")
-        return False
-    cursor.execute(
-        """
-        INSERT OR REPLACE INTO file_baselines (filepath, hash_sha256, is_active)
-        VALUES (?, ?, 1)
-    """,
-        (filepath, current_hash),
+def _store_baseline(conn, filepath, digest):
+    conn.execute(
+        "INSERT OR REPLACE INTO file_baselines (filepath, hash_sha256, is_active) VALUES (?, ?, 1)",
+        (filepath, digest),
     )
-    logger.info(f"Baseline established for: {filepath}")
-    return True
 
 
 def initialize_baselines(config_path: str = "fim/config.json") -> None:
@@ -101,33 +94,33 @@ def initialize_baselines(config_path: str = "fim/config.json") -> None:
 
     _bootstrap_fim_db()
 
-    with sqlite3.connect(DB_PATH) as conn:
-        cursor = conn.cursor()
-        for item in config.get("critical_files", []):
-            _baseline_file(cursor, item["path"])
-
-        for item in config.get("critical_dirs", []):
-            dirpath = item["path"]
-            recursive = bool(item.get("recursive", True))
-            severity = str(item.get("created_severity", "WARNING")).upper()
-            if severity not in ("INFO", "WARNING", "ERROR", "CRITICAL"):
-                severity = "WARNING"
-            if not os.path.isdir(dirpath):
-                logger.warning(f"Monitored directory {dirpath} does not exist; skipping.")
-                continue
-            cursor.execute(
-                """
-                INSERT OR REPLACE INTO fim_directories
-                    (dirpath, recursive, created_severity, is_active)
-                VALUES (?, ?, ?, 1)
-            """,
-                (dirpath, int(recursive), severity),
-            )
-            for filepath in _iter_directory_files(dirpath, recursive):
-                _baseline_file(cursor, filepath)
-            logger.info(f"Directory baseline established for: {dirpath}")
-
-        conn.commit()
+    files = {item["path"] for item in config.get("critical_files", [])}
+    directories = []
+    for item in config.get("critical_dirs", []):
+        dirpath = item["path"]
+        recursive = bool(item.get("recursive", True))
+        severity = str(item.get("created_severity", "WARNING")).upper()
+        if severity not in ("INFO", "WARNING", "ERROR", "CRITICAL"):
+            severity = "WARNING"
+        if not os.path.isdir(dirpath):
+            logger.warning(f"Monitored directory {dirpath} does not exist; skipping.")
+            continue
+        directories.append((dirpath, int(recursive), severity))
+        files.update(_iter_directory_files(dirpath, recursive))
+    # Complete file I/O and logging before acquiring the database writer.
+    hashes = [(path, calculate_sha256(path)) for path in sorted(files)]
+    with closing(sqlite3.connect(DB_PATH)) as conn, conn:
+        conn.executemany(
+            "INSERT OR REPLACE INTO fim_directories "
+            "(dirpath, recursive, created_severity, is_active) VALUES (?, ?, ?, 1)",
+            directories,
+        )
+        for path, digest in hashes:
+            if digest is not None:
+                _store_baseline(conn, path, digest)
+    for path, digest in hashes:
+        if digest is not None:
+            logger.info(f"Baseline established for: {path}")
 
 
 def check_integrity() -> None:
@@ -138,116 +131,91 @@ def check_integrity() -> None:
     logger.info("Initiating integrity check...")
     _bootstrap_fim_db()
 
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        cursor.execute("SELECT filepath, hash_sha256 FROM file_baselines WHERE is_active = 1")
-        baselines = cursor.fetchall()
-
-        for row in baselines:
-            filepath = row["filepath"]
-            stored_hash = row["hash_sha256"]
-            current_hash = calculate_sha256(filepath)
-
-            if current_hash is None:
-                _dispatch_fim_event(
-                    FimEvent(
-                        level="CRITICAL",
-                        event_type="DELETED",
-                        filepath=filepath,
-                        message=f"CRITICAL: Protected file {filepath} has been deleted.",
-                    )
-                )
-            elif current_hash != stored_hash:
-                _dispatch_fim_event(
-                    FimEvent(
-                        level="CRITICAL",
-                        event_type="MODIFIED",
-                        filepath=filepath,
-                        message=f"CRITICAL: Integrity breach detected in {filepath}.",
-                    )
-                )
-            else:
-                logger.debug(f"{filepath}: No changes detected.")
-
-        _check_directories_for_created(conn)
+    with closing(sqlite3.connect(DB_PATH)) as conn:
+        baselines = conn.execute(
+            "SELECT filepath, hash_sha256 FROM file_baselines WHERE is_active = 1"
+        ).fetchall()
+    for filepath, stored_hash in baselines:
+        current_hash = calculate_sha256(filepath)
+        if current_hash is None:
+            kind, message = "DELETED", f"CRITICAL: Protected file {filepath} has been deleted."
+        elif current_hash != stored_hash:
+            kind, message = "MODIFIED", f"CRITICAL: Integrity breach detected in {filepath}."
+        else:
+            continue
+        _dispatch_fim_event(FimEvent("CRITICAL", kind, filepath, message))
+    _check_directories_for_created()
 
 
-def _check_directories_for_created(conn: sqlite3.Connection) -> None:
-    """Flags files that appeared inside monitored directories since baseline.
-
-    Each new file raises exactly one CREATED event and is then folded into the
-    baseline set, so subsequent tampering with it surfaces as MODIFIED/DELETED
-    rather than repeated CREATED noise. If the file cannot be hashed it stays
-    un-baselined and will be re-reported on the next check (deliberate: an
-    unreadable new file in a protected directory should not go quiet).
-    """
-    cursor = conn.cursor()
-    cursor.execute(
-        "SELECT dirpath, recursive, created_severity FROM fim_directories WHERE is_active = 1"
+def _persist_fim_event(conn, event):
+    """The FIM row and audit row share a single transaction."""
+    conn.execute(
+        "INSERT INTO fim_events (filepath, event_type, severity) VALUES (?, ?, ?)",
+        (event.filepath, event.event_type, event.level),
     )
-    directories = cursor.fetchall()
-    if not directories:
-        return
+    context = {
+        "filepath": event.filepath,
+        "event_type": event.event_type,
+        "timestamp": event.timestamp,
+        "host_id": socket.gethostname(),
+    }
+    conn.execute(
+        "INSERT INTO audit_events (timestamp, level, module_source, message, context_data) "
+        "VALUES (?, ?, 'fim_monitor', ?, ?)",
+        (event.timestamp, event.level, event.message, json.dumps(context)),
+    )
 
-    cursor.execute("SELECT filepath FROM file_baselines WHERE is_active = 1")
-    known = {row[0] for row in cursor.fetchall()}
 
+def _notify(event):
+    if event.level == "CRITICAL":
+        send_security_alert(
+            event_level=event.level, module_source=event.module_source, alert_message=event.message
+        )
+
+
+def _check_directories_for_created():
+    with closing(sqlite3.connect(DB_PATH)) as conn:
+        directories = conn.execute(
+            "SELECT dirpath, recursive, created_severity FROM fim_directories WHERE is_active = 1"
+        ).fetchall()
+        known = {
+            row[0]
+            for row in conn.execute("SELECT filepath FROM file_baselines WHERE is_active = 1")
+        }
     for dirpath, recursive, severity in directories:
         for filepath in _iter_directory_files(dirpath, bool(recursive)):
             if filepath in known:
                 continue
-            _dispatch_fim_event(
-                FimEvent(
-                    level=severity or "WARNING",
-                    event_type="CREATED",
-                    filepath=filepath,
-                    message=(
-                        f"New file created in monitored directory: {filepath} "
-                        f"(watch root: {dirpath})."
-                    ),
-                )
+            digest = calculate_sha256(filepath)
+            event = FimEvent(
+                severity or "WARNING",
+                "CREATED",
+                filepath,
+                f"New file created in monitored directory: {filepath} (watch root: {dirpath}).",
             )
-            if _baseline_file(cursor, filepath):
-                known.add(filepath)
-    conn.commit()
+            try:
+                with closing(sqlite3.connect(DB_PATH)) as conn, conn:
+                    conn.execute("BEGIN IMMEDIATE")
+                    if conn.execute(
+                        "SELECT 1 FROM file_baselines WHERE filepath = ? AND is_active = 1",
+                        (filepath,),
+                    ).fetchone():
+                        continue
+                    _persist_fim_event(conn, event)
+                    if digest is not None:
+                        _store_baseline(conn, filepath, digest)
+                if digest is not None:
+                    known.add(filepath)
+                _notify(event)
+            except Exception as exc:
+                # The baseline rolls back with the failed event, allowing a retry.
+                logger.error(f"Failed to persist CREATED event for {filepath}: {exc}")
 
 
 def _dispatch_fim_event(event: FimEvent) -> None:
-    """Dispatches the FIM event to DB, Logger, and Alerts."""
     try:
-        with sqlite3.connect(DB_PATH) as conn:
-            conn.execute(
-                """
-                INSERT INTO fim_events (filepath, event_type, severity)
-                VALUES (?, ?, ?)
-            """,
-                (event.filepath, event.event_type, event.level),
-            )
-            conn.commit()
-
-        # L0: Local Logging. The audit handler serializes record.context into
-        # the context_data column; loose extra attributes would be dropped, so
-        # the structured fields ride inside one "context" dict.
-        log_method = getattr(logger, event.level.lower(), logger.info)
-        log_method(
-            event.message,
-            extra={
-                "context": {
-                    "filepath": event.filepath,
-                    "event_type": event.event_type,
-                    "timestamp": event.timestamp,
-                }
-            },
-        )
-
-        # L1: Email Alerting
-        if event.level == "CRITICAL":
-            send_security_alert(
-                event_level=event.level,
-                module_source=event.module_source,
-                alert_message=event.message,
-            )
-
-    except Exception as e:
-        logger.error(f"Failed to dispatch FIM event: {e}")
+        with closing(sqlite3.connect(DB_PATH)) as conn, conn:
+            _persist_fim_event(conn, event)
+        _notify(event)
+    except Exception as exc:
+        logger.error(f"Failed to dispatch FIM event: {exc}")

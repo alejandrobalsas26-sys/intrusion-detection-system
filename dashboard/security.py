@@ -8,12 +8,15 @@ cross-instance surprises. For multi-process deployments put a shared limiter
 (reverse proxy or Redis) in front — documented in docs/DEPLOYMENT.md.
 """
 
+import math
 import os
 import threading
 import time
 from functools import wraps
 
 from flask import current_app, jsonify, redirect, request, session, url_for
+
+from dashboard.queries import get_active_role
 
 
 class LoginRateLimiter:
@@ -39,9 +42,7 @@ class LoginRateLimiter:
             # Opportunistic cleanup keeps memory bounded under IP churn.
             if len(self._windows) > 10_000:
                 cutoff = ts - self.window_seconds
-                self._windows = {
-                    ip: wc for ip, wc in self._windows.items() if wc[0] >= cutoff
-                }
+                self._windows = {ip: wc for ip, wc in self._windows.items() if wc[0] >= cutoff}
             if count > self.max_attempts:
                 retry_after = int(self.window_seconds - (ts - window_start)) + 1
                 return False, retry_after
@@ -58,17 +59,29 @@ def login_required(view):
 
     @wraps(view)
     def wrapped(*args, **kwargs):
-        if "user_id" not in session:
+        username = session.get("user_id")
+        authenticated_at = session.get("authenticated_at")
+        lifetime = current_app.permanent_session_lifetime.total_seconds()
+        valid_time = (
+            isinstance(authenticated_at, (int, float))
+            and math.isfinite(authenticated_at)
+            and 0 <= time.time() - authenticated_at < lifetime
+        )
+        role = get_active_role(username) if isinstance(username, str) and valid_time else None
+        if role is None:
+            session.clear()
             if request.path.startswith("/api/") or request.path.startswith("/events/"):
                 return jsonify({"error": "authentication required"}), 401
             return redirect(url_for("main.login_form"))
+        if session.get("role") != role:
+            session["role"] = role
         return view(*args, **kwargs)
 
     return wrapped
 
 
 def require_role(*roles: str):
-    """RBAC gate over the session role established at login.
+    """RBAC gate over the current active user's database role.
 
     Usage: @require_role("admin") or @require_role("admin", "analyst").
     Unauthenticated -> login flow; authenticated without the role -> 403.

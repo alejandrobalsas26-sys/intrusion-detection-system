@@ -60,19 +60,18 @@ class TestVerifyToken(unittest.TestCase):
         self.assertEqual(event2.context["reason_code"], "TOKEN_REUSED_WINDOW")
 
     @patch("auth.core.time.sleep")
-    def test_verify_race_condition(self, mock_sleep):
+    def test_old_numeric_fingerprint_does_not_block_new_interval(self, mock_sleep):
         totp = pyotp.TOTP(self.secret)
         token = totp.now()
         fingerprint = _token_fingerprint(self.user_id, token)
-        # Bypasses 90s window but triggers UNIQUE constraint
+        # An old numerical coincidence must not reserve the current interval.
         with sqlite3.connect(DB_PATH) as conn:
             conn.execute(
                 "INSERT INTO auth_attempts (user_id, success, token_fingerprint, timestamp) VALUES (?, 1, ?, datetime('now', '-100 seconds'))",
                 (self.user_id, fingerprint),
             )
         event = verify_token(self.username, token)
-        self.assertEqual(event.event_name, "REPLAY_ATTACK")
-        self.assertEqual(event.context["reason_code"], "TOKEN_REUSED_RACE_CONDITION")
+        self.assertEqual(event.event_name, "AUTH_SUCCESS")
 
     @patch("auth.core.time.sleep")
     def test_verify_crypto_error(self, mock_sleep):

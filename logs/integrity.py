@@ -16,7 +16,7 @@ Design choices that keep it safe and cheap:
     row — to evade detection. For a stronger guarantee, export the latest
     ``chain_hash`` to off-box/WORM storage as an anchor.
   * It coexists with retention: segments whose rows have legitimately aged out
-    below the current minimum id are reported as "aged out", not as tampering.
+    with recorded retention fingerprints remain verifiable after their payloads are purged.
 
 Returns plain dataclasses; no exceptions for the expected "tamper found" path so
 callers can branch on the result.
@@ -92,9 +92,7 @@ class VerifyResult:
 
 def _last_checkpoint(conn: sqlite3.Connection):
     conn.row_factory = sqlite3.Row
-    return conn.execute(
-        "SELECT * FROM audit_checkpoints ORDER BY id DESC LIMIT 1"
-    ).fetchone()
+    return conn.execute("SELECT * FROM audit_checkpoints ORDER BY id DESC LIMIT 1").fetchone()
 
 
 def seal_audit_log(db_path: str | None = None) -> SealResult:
@@ -105,6 +103,7 @@ def seal_audit_log(db_path: str | None = None) -> SealResult:
         _ensure_schema(conn)
         conn.row_factory = sqlite3.Row
 
+        conn.execute("BEGIN IMMEDIATE")
         last = _last_checkpoint(conn)
         prev_through = last["through_id"] if last else 0
         prev_chain = last["chain_hash"] if last else GENESIS
@@ -155,18 +154,14 @@ def verify_audit_log(db_path: str | None = None) -> VerifyResult:
         _ensure_schema(conn)
         conn.row_factory = sqlite3.Row
 
-        checkpoints = conn.execute(
-            "SELECT * FROM audit_checkpoints ORDER BY id ASC"
-        ).fetchall()
+        conn.execute("BEGIN")
+        checkpoints = conn.execute("SELECT * FROM audit_checkpoints ORDER BY id ASC").fetchall()
         result = VerifyResult(ok=True, checkpoints_total=len(checkpoints))
         if not checkpoints:
             result.message = "No checkpoints; nothing sealed yet."
             return result
 
-        bounds = conn.execute(
-            "SELECT MIN(id) AS lo, MAX(id) AS hi FROM audit_events"
-        ).fetchone()
-        min_present = bounds["lo"]
+        bounds = conn.execute("SELECT MIN(id) AS lo, MAX(id) AS hi FROM audit_events").fetchone()
         max_present = bounds["hi"]
 
         prev_chain = GENESIS
@@ -180,29 +175,29 @@ def verify_audit_log(db_path: str | None = None) -> VerifyResult:
                 )
             prev_chain = cp["chain_hash"]
 
-            if min_present is None or cp["through_id"] < min_present:
-                result.aged_out += 1
-                continue
-            if cp["from_id"] < min_present:
-                # Straddles the retention boundary; the missing prefix makes a
-                # full recompute impossible without false-flagging the purge.
-                result.partial += 1
-                continue
-
             rows = conn.execute(
                 "SELECT id, timestamp, level, module_source, message, context_data "
                 "FROM audit_events WHERE id >= ? AND id <= ? ORDER BY id ASC",
                 (cp["from_id"], cp["through_id"]),
             ).fetchall()
+            retired = conn.execute(
+                "SELECT event_id, fingerprint FROM audit_retention_hashes "
+                "WHERE event_id >= ? AND event_id <= ? ORDER BY event_id ASC",
+                (cp["from_id"], cp["through_id"]),
+            ).fetchall()
+            fingerprints = [(row["id"], _row_fingerprint(row)) for row in rows]
+            fingerprints.extend((row["event_id"], row["fingerprint"]) for row in retired)
             running = cp["prev_chain_hash"]
-            for row in rows:
-                running = _fold(running, _row_fingerprint(row))
+            for _, fingerprint in sorted(fingerprints):
+                running = _fold(running, fingerprint)
 
-            if len(rows) != cp["row_count"]:
+            if len(fingerprints) != cp["row_count"] or len(
+                {item[0] for item in fingerprints}
+            ) != len(fingerprints):
                 result.ok = False
                 result.failures.append(
                     f"Checkpoint #{cp['id']}: expected {cp['row_count']} event(s) in "
-                    f"ids {cp['from_id']}-{cp['through_id']}, found {len(rows)} "
+                    f"ids {cp['from_id']}-{cp['through_id']}, found {len(fingerprints)} "
                     "(rows deleted or inserted)."
                 )
             elif running != cp["chain_hash"]:
@@ -211,8 +206,12 @@ def verify_audit_log(db_path: str | None = None) -> VerifyResult:
                     f"Checkpoint #{cp['id']}: hash mismatch over ids "
                     f"{cp['from_id']}-{cp['through_id']} (an event was modified)."
                 )
+            elif not rows:
+                result.aged_out += 1
             else:
                 result.verified += 1
+                if retired:
+                    result.partial += 1
 
         last = checkpoints[-1]
         result.last_chain_hash = last["chain_hash"]

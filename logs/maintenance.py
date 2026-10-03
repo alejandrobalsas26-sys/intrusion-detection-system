@@ -13,6 +13,8 @@ import sqlite3
 import time
 from dataclasses import dataclass
 
+from logs.integrity import _ensure_schema, _row_fingerprint
+
 DEFAULT_RETENTION_DAYS = int(os.getenv("RETENTION_DAYS", "90"))
 
 
@@ -61,24 +63,43 @@ def purge_old_events(
     result = PurgeResult()
 
     with _connect(path) as conn:
+        _ensure_schema(conn)
+        conn.row_factory = sqlite3.Row
+        conn.execute("BEGIN IMMEDIATE")
+        last_sealed = (
+            conn.execute("SELECT MAX(through_id) FROM audit_checkpoints").fetchone()[0] or 0
+        )
+        retired = conn.execute(
+            "SELECT * FROM audit_events WHERE timestamp < ? AND id <= ?",
+            (horizon_epoch, last_sealed),
+        ).fetchall()
+        conn.executemany(
+            "INSERT INTO audit_retention_hashes (event_id, fingerprint, purged_at) "
+            "VALUES (?, ?, ?)",
+            [(row["id"], _row_fingerprint(row), time.time()) for row in retired],
+        )
         cur = conn.execute("DELETE FROM audit_events WHERE timestamp < ?", (horizon_epoch,))
         result.audit_events = cur.rowcount
 
         if _table_exists(conn, "fim_events"):
             cur = conn.execute(
-                "DELETE FROM fim_events "
-                "WHERE timestamp < datetime('now', '-' || ? || ' days')",
+                "DELETE FROM fim_events WHERE timestamp < datetime('now', '-' || ? || ' days')",
                 (retention_days,),
             )
             result.fim_events = cur.rowcount
 
         if _table_exists(conn, "auth_attempts"):
             cur = conn.execute(
-                "DELETE FROM auth_attempts "
-                "WHERE timestamp < datetime('now', '-' || ? || ' days')",
+                "DELETE FROM auth_attempts WHERE timestamp < datetime('now', '-' || ? || ' days')",
                 (retention_days,),
             )
             result.auth_attempts = cur.rowcount
+
+        if _table_exists(conn, "totp_consumptions"):
+            conn.execute(
+                "DELETE FROM totp_consumptions WHERE consumed_at < ? AND time_step < ?",
+                (horizon_epoch, int(horizon_epoch // 30)),
+            )
 
         if _table_exists(conn, "incidents"):
             cur = conn.execute(

@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 os.environ.setdefault("FLASK_SECRET_KEY", "test-secret-key-not-for-production")
 
 from dashboard import create_app, queries
+from tests.dashboard_helpers import seed_user
 
 
 def _build_mock_connection(fetchall_rows=None, fetchone_row=None):
@@ -62,13 +63,14 @@ class DashboardRoutesTestCase(unittest.TestCase):
         response = self.client.post("/login", data={"username": "alice", "totp_code": "000000"})
         self.assertEqual(response.status_code, 302)
         self.assertIn("/login", response.headers["Location"])
-        mock_verify.assert_called_once_with("alice", "000000")
+        mock_verify.assert_called_once_with("alice", "000000", source_ip="127.0.0.1")
         with self.client.session_transaction() as sess:
             self.assertNotIn("user_id", sess)
 
     @patch("dashboard.routes.verify_token")
     def test_login_success_sets_session_and_redirects_home(self, mock_verify):
         """A successful AuthEvent establishes the session and redirects to /."""
+        seed_user()
         mock_verify.return_value = MagicMock(event_name="AUTH_SUCCESS")
         response = self.client.post("/login", data={"username": "alice", "totp_code": "123456"})
         self.assertEqual(response.status_code, 302)

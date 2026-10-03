@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 
 from logs.integrity import seal_audit_log, verify_audit_log
+from logs.maintenance import purge_old_events
 
 REPO_ROOT = Path(__file__).parent.parent.parent
 SCHEMA = REPO_ROOT / "logs" / "schema.sql"
@@ -112,11 +113,12 @@ class AuditIntegrityTestCase(unittest.TestCase):
 
     def test_retention_aged_out_prefix_is_not_tampering(self):
         self._insert(3)
+        self._exec("UPDATE audit_events SET timestamp = ? WHERE id <= 3", (time.time() - 100 * 86400,))
         seal_audit_log(db_path=self.db_path)  # cp1: ids 1-3
         self._insert(3)
         seal_audit_log(db_path=self.db_path)  # cp2: ids 4-6
-        # Simulate a retention purge of the oldest segment's rows.
-        self._exec("DELETE FROM audit_events WHERE id <= 3")
+        # The production purge records proof before deleting sealed payloads.
+        purge_old_events(retention_days=90, db_path=self.db_path)
         result = verify_audit_log(db_path=self.db_path)
         self.assertTrue(result.ok)
         self.assertEqual(result.aged_out, 1)

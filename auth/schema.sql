@@ -27,10 +27,21 @@ CREATE TABLE IF NOT EXISTS auth_attempts (
     success BOOLEAN NOT NULL,
     ip_address TEXT,
     token_fingerprint TEXT NOT NULL, -- Cryptographic fingerprint of the token
+    totp_step INTEGER,               -- NULL for recovery, failures, and legacy rows
     FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_replay_protection ON auth_attempts(user_id, token_fingerprint);
+-- Numeric TOTP values repeat in different intervals. Keep telemetry searchable,
+-- but enforce single use on the verified interval instead of the digits.
+DROP INDEX IF EXISTS idx_replay_protection;
+CREATE INDEX IF NOT EXISTS idx_auth_fingerprint ON auth_attempts(user_id, token_fingerprint);
+CREATE TABLE IF NOT EXISTS totp_consumptions (
+    user_id INTEGER NOT NULL,
+    time_step INTEGER NOT NULL,
+    consumed_at REAL NOT NULL,
+    PRIMARY KEY (user_id, time_step),
+    FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+);
 
 -- Backoff and 90s replay-window lookups filter by user_id + recent timestamp
 -- (and success). This covering index keeps those reads off a full table scan
@@ -38,6 +49,5 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_replay_protection ON auth_attempts(user_id
 CREATE INDEX IF NOT EXISTS idx_auth_attempts_user_time ON auth_attempts(user_id, timestamp, success);
 
 -- NOTE: a token_blacklist table previously lived here but was never read or
--- written by any code path (replay protection is handled by the auth_attempts
--- fingerprint + UNIQUE index above). It was removed to drop dead schema.
+-- written by any code path (TOTP replay protection uses totp_consumptions). It was removed to drop dead schema.
 -- Existing databases keep their empty table harmlessly; new ones simply omit it.

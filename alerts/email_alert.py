@@ -1,6 +1,7 @@
 import mimetypes
 import os
 import smtplib
+import ssl
 from email.message import EmailMessage
 from pathlib import Path
 
@@ -129,7 +130,7 @@ def send_security_alert(
     try:
         # SMTP client with STARTTLS and a defensive timeout
         with smtplib.SMTP(smtp_host, smtp_port, timeout=30) as server:
-            server.starttls()
+            server.starttls(context=ssl.create_default_context())
             server.login(sender_email, sender_password)
             server.send_message(msg)
         logger.info("SMTP security alert '%s' sent successfully to %s", subject, receiver_email)

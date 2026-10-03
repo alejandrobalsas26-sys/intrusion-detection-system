@@ -22,6 +22,7 @@ auth_success_after_failures, recon_then_auth, network_then_fim, and ioc_match
 import json
 import os
 import shutil
+import socket
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -93,6 +94,8 @@ def build_records() -> list[dict]:
             "context": {"source_ip": ATTACKER_IP},
         }
     )
+    for record in records:
+        record["context"]["host_id"] = socket.gethostname()
     return records
 
 

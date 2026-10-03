@@ -16,7 +16,7 @@ IDS/SIEM platform. **No existing functionality is removed at any phase.**
 | L0 | `logs/` | SQLite forensic audit log (WAL), failsafe text fallback, parameterized inserts | Solid |
 | L1 | `alerts/` | SMTP/STARTTLS alerting, MIME attachments with size/MIME guards, granular error telemetry | Solid |
 | L2 | `network/` | Scapy sniffer (daemon thread), plug-in detector architecture, ARP-spoof + SYN-scan detectors with sliding windows and O(1) amortized counting, consent gate, privilege check (POSIX + Windows) | Solid |
-| L7 | `auth/` | TOTP MFA, Fernet-encrypted secrets, scrypt-hashed recovery codes, replay protection (fingerprint + unique index race guard), exponential backoff, anti-enumeration, soft-delete revocation, CLI (enroll/revoke/list with QR) | Solid |
+| L7 | `auth/` | TOTP authentication, Fernet-encrypted secrets, scrypt-hashed recovery codes, replay protection (atomic verified-interval consumption), exponential backoff, anti-enumeration, soft-delete revocation, CLI (enroll/revoke/list with QR) | Solid |
 | FIM | `fim/` | SHA-256 baselines, integrity checks (MODIFIED/DELETED), config-driven, CLI | Solid |
 | L8 | `dashboard/` | Flask app-factory, read-only DB access (`mode=ro` URI), TOTP login, CSRF (Flask-WTF), CSP/headers (Talisman), session fixation mitigation, SSE event stream | Good |
 
@@ -34,7 +34,7 @@ CLI), network detectors, FIM, dashboard routes/queries. 48 passing.
 | S-1 | **No HTTP-layer rate limiting on `/login`.** The MFA backoff sleeps *inside* the request handler, so an attacker can hold worker threads (slow-loris-style resource exhaustion) and parallel requests bypass the serialized delay. A skipped test documents the regression (Flask-Limiter removed in commit 6c61030). | High | **Fixed** — in-process fixed-window limiter, 429 + `Retry-After`, test un-skipped |
 | S-2 | **Blocking `time.sleep()` backoff in `auth.core`.** DoS vector when called from a web worker; concurrent attempts are not actually delayed. | High | **Fixed** — opt-in `MFA_BACKOFF_MODE=reject` returns a `RATE_LIMITED` event instead of sleeping (dashboard enables it; CLI keeps legacy sleep) |
 | S-3 | **RBAC absent.** `users.role` column exists but is never read or enforced. | Medium | **Fixed** — role surfaced in auth + `require_role` decorator in dashboard |
-| S-4 | **SSE stream is unbounded** — one worker per client, forever; session never re-validated. | Medium | **Fixed** — bounded lifetime + heartbeats |
+| S-4 | **SSE stream is unbounded** — one worker per client, forever; session never re-validated. | Medium | **Fixed** — bounded lifetime + heartbeats + live active-user and expiry checks |
 | S-5 | Signed-cookie sessions cannot be revoked server-side (documented in README). | Medium | Documented; server-side sessions on PostgreSQL/Redis path (Phase 3) |
 | S-6 | No dependency auditing / SBOM / SAST in automation (CI workflow removed by owner; local validation only). | Medium | Documented in `docs/SECURITY.md` (pip-audit / ruff S-rules locally) |
 | S-7 | Alert flooding: a noisy detector can trigger unlimited SMTP sends (mailbox flooding + SMTP throttling). | Medium | **Fixed** — opt-in duplicate-suppression window in `alerts` |

@@ -3,8 +3,8 @@
 A **local, defensive IDS / SIEM-lite platform** for a Windows homelab: network
 detections, file integrity monitoring, a unified SQLite audit store, a
 correlation engine that turns raw events into MITRE-mapped incidents, and a
-TOTP-protected read-only dashboard. Everything runs on one machine with no
-cloud dependencies. This is a portfolio/homelab project — it is **not** an
+TOTP-protected read-only dashboard. The backend runs on one machine. The dashboard loads Tailwind and Chart.js
+from public CDNs, so its browser presentation requires internet access. This is a portfolio/homelab project — it is **not** an
 enterprise SIEM and does not claim to be one.
 
 ## Tech stack
@@ -13,7 +13,7 @@ enterprise SIEM and does not claim to be one.
 * Flask + Waitress (dashboard; Waitress is the Windows-friendly production WSGI server)
 * Scapy (network sensor and offline PCAP replay)
 * SQLite3 with WAL — single unified event store
-* cryptography (Fernet) + pyotp (TOTP MFA)
+* cryptography (Fernet) + pyotp (TOTP authentication)
 
 ## Implemented
 
@@ -35,16 +35,20 @@ enterprise SIEM and does not claim to be one.
   ATT&CK mapping → risk scoring (0–100) → sliding-window correlation that
   writes deduplicated incidents (`python -m detection`). Rules: brute-force
   burst, password spray, success-after-failures, replay, recon→auth,
-  network→FIM, and IOC matches. Optional local threat intel lists
+  network→FIM, and IOC matches. Attack chains require a shared host_id;
+  recon/auth also requires a matching source_ip. Older events without those
+  fields still participate in individual detections and auth-only rules. Optional local threat intel lists
   (`intel.py`), explainable phishing-URL analysis (`phishing.py`), and
   per-rule remediation playbooks (`playbook.py`).
-* **Authentication** — [`auth/`](./auth/): TOTP MFA with Fernet-encrypted
+* **Authentication** — [`auth/`](./auth/): TOTP authentication with Fernet-encrypted
   secrets, enrollment CLI (`python -m auth.cli`), roles (RBAC), and
-  brute-force backoff.
+  brute-force backoff, and atomic single use per verified TOTP interval.
+  Username plus TOTP is one authentication factor; no password factor is implemented.
 * **Dashboard (read-only)** — [`dashboard/`](./dashboard/): Flask application
   factory with TOTP login, session-fixation mitigation, per-IP login rate
   limiting, RBAC, `/healthz`, `/readyz`, Prometheus `/metrics`, and an
-  incident API (`/api/incidents`). The data layer opens SQLite through
+  incident API (`/api/incidents`). Sessions expire 15 minutes after login;
+  active status and roles are rechecked on every protected request. The data layer opens SQLite through
   `file:<path>?mode=ro`, so the database engine itself rejects writes.
   Startup diagnostics: `python -m dashboard --check`.
 * **AI assist (optional, off by default)** — [`ai/`](./ai/): local-LLM
@@ -92,7 +96,8 @@ enterprise SIEM and does not claim to be one.
 * The live sensor needs admin rights; on an unprivileged shell use the PCAP /
   JSONL replay paths instead.
 * Email alerting depends on your SMTP configuration; there is no delivery
-  guarantee or paging integration.
+  guarantee or paging integration. STARTTLS validates the server certificate
+  and hostname using the operating system trust store.
 * The vision module is a prototype (see Experimental above).
 
 ## Quick start (local, Windows-friendly)
@@ -127,3 +132,5 @@ python scripts/validate.py             # compileall + pytest (+ ruff / pip-audit
 * [Operations](./docs/OPERATIONS.md) — health/metrics, retention, backups, incident triage.
 * [Security](./docs/SECURITY.md) — threat model, secrets handling, known limitations.
 * [Demo guide](./demo/README.md) — what the attack chain generates and how to inspect it.
+
+* [Upgrade notes](./docs/UPGRADE.md) — migrations, validation, and compatibility.

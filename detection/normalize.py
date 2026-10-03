@@ -9,6 +9,7 @@ this layer only reads them.
 
 import json
 import re
+import socket
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -92,7 +93,11 @@ def from_fim_event(event) -> NormalizedEvent:
         message=event.message,
         entity=event.filepath,
         source_module=event.module_source,
-        context={"event_type": event.event_type, "filepath": event.filepath},
+        context={
+            "event_type": event.event_type,
+            "filepath": event.filepath,
+            "host_id": socket.gethostname(),
+        },
     )
 
 
@@ -101,8 +106,11 @@ def _classify_audit_row(module: str, message: str, context: dict) -> tuple[str, 
     if module in ("network_sensor", "network"):
         detector = _DETECTOR_RE.search(message)
         ip = _IP_RE.search(message)
-        return ("network", detector.group(1) if detector else "network_event",
-                ip.group(1) if ip else None)
+        return (
+            "network",
+            context.get("detector_name") or (detector.group(1) if detector else "network_event"),
+            context.get("source_ip") or context.get("ip_address") or (ip.group(1) if ip else None),
+        )
 
     if module in ("auth_core", "auth"):
         reason = context.get("reason_code", "")

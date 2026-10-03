@@ -57,8 +57,12 @@ python -m logs verify-chain     # recompute the chain; exit 1 if tampering is fo
 
 `seal` is an out-of-band batch job (run it from the daily retention task). It
 never touches the hot logging path. `verify-chain` reports any modification,
-deletion, or insertion within a sealed range, while treating rows that aged out
-under retention as expected (not tampering). For a stronger guarantee, export
+deletion, or insertion within a sealed range. The production purge preserves
+sealed-row fingerprints in `audit_retention_hashes`, in the same transaction as
+payload deletion. Verification reconstructs the complete chain from remaining
+rows and those fingerprints; manual deletion without proof fails verification.
+A partially purged segment still validates its surviving rows. Fingerprints
+and checkpoints are retained and therefore continue to use disk space. For a stronger guarantee, export
 the `anchor` hash printed by `verify-chain` to off-box/WORM storage so a forger
 who rewrites the checkpoint table cannot cover their tracks.
 

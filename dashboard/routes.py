@@ -20,6 +20,7 @@ from flask import (
 from auth.core import get_user_role, list_users, verify_token
 from dashboard.queries import (
     database_is_readable,
+    get_active_role,
     get_active_users_count,
     get_audit_events_since,
     get_database_size_bytes,
@@ -99,16 +100,24 @@ def login_submit() -> Response:
         flash("Authentication failed. Please verify your credentials.", "error")
         return redirect(url_for("main.login_form"))
 
-    event = verify_token(username, token)
+    event = verify_token(username, token, source_ip=client_ip)
+    if event.event_name == "RATE_LIMITED":
+        response = current_app.response_class(
+            "Too many login attempts. Please retry later.\n",
+            status=429,
+            mimetype="text/plain",
+        )
+        response.headers["Retry-After"] = str(event.context["backoff_applied_seconds"])
+        return response
 
-    if event.event_name == "AUTH_SUCCESS":
+    role = get_user_role(username) if event.event_name == "AUTH_SUCCESS" else None
+    if role is not None:
         # Session fixation mitigation: clear + new keys
         session.clear()
         session.permanent = True
         session["user_id"] = username
         session["authenticated_at"] = time.time()
-        # RBAC: bind the role at login time (users.role column).
-        session["role"] = get_user_role(username) or "analyst"
+        session["role"] = role
 
         return redirect(url_for("main.home"))
     else:
@@ -137,11 +146,17 @@ def event_stream() -> Response:
     """
     max_lifetime = int(os.getenv("SSE_MAX_LIFETIME_SECONDS", "900"))
     poll_interval = int(os.getenv("SSE_POLL_INTERVAL_SECONDS", "5"))
+    username = session["user_id"]
+    expires_at = (
+        session["authenticated_at"] + current_app.permanent_session_lifetime.total_seconds()
+    )
 
     def generate():
         last_id = 0
         started = time.monotonic()
         while time.monotonic() - started < max_lifetime:
+            if time.time() >= expires_at or get_active_role(username) is None:
+                return
             rows = get_audit_events_since(last_id)
             for row in rows:
                 last_id = max(last_id, row.get("id", 0))
@@ -266,6 +281,4 @@ def metrics() -> Response:
         "# TYPE ids_last_event_timestamp_seconds gauge",
         f"ids_last_event_timestamp_seconds {get_latest_event_timestamp()}",
     ]
-    return current_app.response_class(
-        "\n".join(lines) + "\n", mimetype="text/plain; version=0.0.4"
-    )
+    return current_app.response_class("\n".join(lines) + "\n", mimetype="text/plain; version=0.0.4")

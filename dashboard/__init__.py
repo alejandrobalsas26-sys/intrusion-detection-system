@@ -56,6 +56,7 @@ def create_app():
         SESSION_COOKIE_SAMESITE="Strict",
         SESSION_COOKIE_SECURE=is_production,
         PERMANENT_SESSION_LIFETIME=timedelta(minutes=15),
+        SESSION_REFRESH_EACH_REQUEST=False,
         # Cap request bodies. Every endpoint here consumes only small form posts
         # (login, logout, CSRF token); a 64 KB ceiling rejects oversized payloads
         # at the WSGI layer before they can exhaust memory. Override with

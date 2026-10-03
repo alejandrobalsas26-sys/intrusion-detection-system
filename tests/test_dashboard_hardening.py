@@ -9,6 +9,7 @@ os.environ.setdefault("FLASK_SECRET_KEY", "test-secret-key-not-for-production")
 
 from dashboard import create_app
 from dashboard.security import LoginRateLimiter
+from tests.dashboard_helpers import seed_session
 
 
 class LoginRateLimiterUnitTestCase(unittest.TestCase):
@@ -114,8 +115,7 @@ class IncidentsApiTestCase(unittest.TestCase):
                 "status": "open",
             }
         ]
-        with self.client.session_transaction() as sess:
-            sess["user_id"] = "alice"
+        seed_session(self.client)
         response = self.client.get("/api/incidents")
         self.assertEqual(response.status_code, 200)
         payload = response.get_json()
@@ -124,8 +124,7 @@ class IncidentsApiTestCase(unittest.TestCase):
         self.assertEqual(payload["incidents"][0]["entities"], ["alice"])
 
     def test_invalid_status_filter_rejected(self):
-        with self.client.session_transaction() as sess:
-            sess["user_id"] = "alice"
+        seed_session(self.client)
         response = self.client.get("/api/incidents?status=bogus")
         self.assertEqual(response.status_code, 400)
 
@@ -144,8 +143,7 @@ class IncidentsApiTestCase(unittest.TestCase):
                 "status": "open",
             }
         ]
-        with self.client.session_transaction() as sess:
-            sess["user_id"] = "alice"
+        seed_session(self.client)
         response = self.client.get("/api/incidents")
         self.assertEqual(response.status_code, 200)
         incident = response.get_json()["incidents"][0]
@@ -176,16 +174,12 @@ class RbacDecoratorTestCase(unittest.TestCase):
         self.assertEqual(response.status_code, 401)
 
     def test_wrong_role_gets_403(self):
-        with self.client.session_transaction() as sess:
-            sess["user_id"] = "alice"
-            sess["role"] = "analyst"
+        seed_session(self.client, role="analyst")
         response = self.client.get("/api/_test_admin_only")
         self.assertEqual(response.status_code, 403)
 
     def test_admin_role_allowed(self):
-        with self.client.session_transaction() as sess:
-            sess["user_id"] = "alice"
-            sess["role"] = "admin"
+        seed_session(self.client, role="admin")
         response = self.client.get("/api/_test_admin_only")
         self.assertEqual(response.status_code, 200)
 
@@ -220,9 +214,7 @@ class ApiUsersRbacTestCase(unittest.TestCase):
         self.assertEqual(response.status_code, 401)
 
     def test_analyst_gets_403(self):
-        with self.client.session_transaction() as sess:
-            sess["user_id"] = "alice"
-            sess["role"] = "analyst"
+        seed_session(self.client, role="analyst")
         response = self.client.get("/api/users")
         self.assertEqual(response.status_code, 403)
 
@@ -231,9 +223,7 @@ class ApiUsersRbacTestCase(unittest.TestCase):
         mock_list.return_value = [
             {"username": "alice", "created_at": "2026-01-01", "role": "admin", "is_active": 1}
         ]
-        with self.client.session_transaction() as sess:
-            sess["user_id"] = "alice"
-            sess["role"] = "admin"
+        seed_session(self.client, role="admin")
         response = self.client.get("/api/users")
         self.assertEqual(response.status_code, 200)
         body = response.get_data(as_text=True)
@@ -323,7 +313,7 @@ class LoginInputValidationTestCase(unittest.TestCase):
 
         mock_verify.return_value = MagicMock(event_name="AUTH_FAILURE")
         self.client.post("/login", data={"username": "alice", "totp_code": "123456"})
-        mock_verify.assert_called_once_with("alice", "123456")
+        mock_verify.assert_called_once_with("alice", "123456", source_ip="127.0.0.1")
 
 
 class RequestSizeLimitTestCase(unittest.TestCase):

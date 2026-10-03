@@ -70,6 +70,8 @@ class TestCorrelationRules(unittest.TestCase):
                         category="network", ts=base),
             _make_event("AUTH_FAILURE", "alice", ts=base + 60),
         ]
+        for event in events:
+            event.context.update(host_id="test-host", source_ip="10.0.0.9")
         incidents = rule_recon_then_auth(events, window_seconds=1800)
         self.assertEqual(len(incidents), 1)
         # Cross-category chain must include both entities
@@ -90,6 +92,8 @@ class TestCorrelationRules(unittest.TestCase):
             _make_event("FIM_MODIFIED", "/etc/passwd", severity="CRITICAL",
                         category="fim", ts=base + 120),
         ]
+        for event in events:
+            event.context["host_id"] = "test-host"
         incidents = rule_network_then_fim(events, window_seconds=1800)
         self.assertEqual(len(incidents), 1)
         # Cross-category incidents score higher than either event alone

@@ -9,6 +9,7 @@ from detection.dedup import EventDeduplicator
 from logs.logger import get_logger
 
 from .detectors import build_default_detectors
+from .dispatch import log_detection
 
 logger = get_logger("network_sensor")
 
@@ -70,19 +71,14 @@ def start_sensor() -> threading.Thread | None:
                             )
                             continue
 
-                    # A. Dispatch to L1 (Alerts)
+                    # Persist evidence before attempting outbound alert delivery.
+                    log_detection(event, logger)
                     send_security_alert(
                         event_level=event.level,
                         module_source=event.module_source,
                         alert_message=event.message,
                     )
 
-                    # B. Dispatch to L0 (Logs/Persistence)
-                    # Dynamic level mapping (critical, warning, info)
-                    log_func = getattr(logger, event.level.lower(), logger.info)
-                    log_func(
-                        f"DetectionEvent: {event.level} from {event.detector_name} - {event.message}"  # noqa: E501
-                    )
             except Exception as e:
                 # One failing detector must not kill the sniffer
                 logger.error(f"Error in detector {detector.__class__.__name__}: {e}")

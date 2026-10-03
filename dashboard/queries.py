@@ -1,11 +1,24 @@
 import os
 import sqlite3
+from contextlib import closing
 
 from logs.logger import get_logger
 
 logger = get_logger("dashboard_queries")
 
 DB_PATH = os.getenv("DB_PATH", "logs/ids_database.sqlite3")
+
+
+def get_active_role(username: str) -> str | None:
+    """Read the current authorization state; fail closed on database errors."""
+    try:
+        with closing(_get_connection()) as conn:
+            row = conn.execute(
+                "SELECT role FROM users WHERE username = ? AND is_active = 1", (username,)
+            ).fetchone()
+        return row[0] if row else None
+    except sqlite3.Error:
+        return None
 
 
 def _get_connection() -> sqlite3.Connection:
